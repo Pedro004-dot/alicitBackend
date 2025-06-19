@@ -312,53 +312,71 @@ def _create_directories() -> None:
         os.makedirs(directory, exist_ok=True)
 
 def main():
-    """Função principal para executar o backend Alicit"""
+    """
+    Função principal para executar a aplicação
+    Detecta ambiente e executa adequadamente
+    """
+    # Configurar logging primeiro
+    setup_logging()
+    
+    # Carregar variáveis de ambiente primeiro
+    from config.env_loader import load_environment
+    load_environment()
+    
+    # Criar diretórios necessários
+    _create_directories()
+    
     try:
-        print("🚀 Iniciando Alicit Backend - CONEXÃO DIRETA SUPABASE")
-        print("=" * 60)
-        
-        # Configurar logging primeiro
-        setup_logging()
-        
-        # Criar diretórios
-        _create_directories()
-        
-        # Carregar configurações de ambiente se disponível
-        try:
-            from config.env_loader import load_environment
-            load_environment()
-            print("✅ Configurações de ambiente carregadas")
-        except:
-            print("⚠️ env_loader não disponível - usando config padrão")
-        
         # Criar aplicação
-        print("🔄 Criando aplicação...")
         app = create_app()
-        print("✅ Aplicação criada com sucesso!")
         
-        # Configurar servidor
-        host = '0.0.0.0'
-        port = 5002
-        
-        print(f"🌐 Servidor: http://{host}:{port}")
-        print("💡 Health Check: http://localhost:5002/api/health")
-        print("🔗 Supabase: https://hdlowzlkwrboqfzjewom.supabase.co")
-        print("📋 41 endpoints ativos")
-        print("🗄️ Conexão: PostgreSQL via Supabase")
-        print("=" * 60)
-        print("🎯 Iniciando servidor...")
-        
-        # Iniciar servidor
-        app.run(host=host, port=port, debug=True, threaded=True)
-        
+        # Verificar se está no Railway (produção)
+        if os.getenv('RAILWAY_ENVIRONMENT_NAME'):
+            print("🚄 RAILWAY DETECTED - Executando com Gunicorn")
+            print(f"🌍 Environment: {os.getenv('RAILWAY_ENVIRONMENT_NAME')}")
+            
+            # Configurar para gunicorn
+            port = int(os.getenv('PORT', 8080))
+            
+            # Usar gunicorn para produção
+            import subprocess
+            import sys
+            
+            cmd = [
+                'gunicorn', 
+                '-w', '2',  # 2 workers para Railway
+                '-b', f'0.0.0.0:{port}',
+                '--timeout', '120',
+                '--keep-alive', '60',
+                '--max-requests', '1000',
+                '--max-requests-jitter', '100',
+                '--preload',
+                'app:app'  # Módulo:variável
+            ]
+            
+            print(f"🚀 Executando: {' '.join(cmd)}")
+            subprocess.run(cmd)
+        else:
+            print("🧪 DESENVOLVIMENTO - Executando Flask dev server")
+            # Desenvolvimento local
+            port = int(os.getenv('PORT', 5000))
+            debug = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
+            
+            app.run(
+                host='0.0.0.0',
+                port=port,
+                debug=debug
+            )
+            
     except Exception as e:
-        print(f"❌ ERRO: {e}")
-        print("\n🔍 TRACEBACK:")
+        print(f"❌ Erro crítico na inicialização: {e}")
+        import traceback
         traceback.print_exc()
         sys.exit(1)
 
-if __name__ == '__main__':
-    main()
 
-# Criar instância da aplicação para gunicorn
-app = create_app() 
+# Para compatibilidade com gunicorn
+app = create_app()
+
+if __name__ == "__main__":
+    main() 

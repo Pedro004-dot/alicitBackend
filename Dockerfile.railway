@@ -69,6 +69,7 @@ WORKDIR /app
 
 # Copy application code (agora da raiz)
 COPY src/ ./src/
+COPY run_app.py .
 COPY requirements-railway.txt .
 
 # Create necessary directories (including cache for transformers)
@@ -97,8 +98,8 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
 EXPOSE $PORT
 
 # Change to src directory and run gunicorn
-WORKDIR /app/src
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8080", "--timeout", "120", "--keep-alive", "60", "--max-requests", "1000", "--max-requests-jitter", "100", "--preload", "app:app"]
+WORKDIR /app
+CMD ["python", "run_app.py"]
 
 # ===============================================
 # RAILWAY OPTIMIZATION NOTES:

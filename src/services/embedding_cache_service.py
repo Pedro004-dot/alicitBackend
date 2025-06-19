@@ -5,7 +5,7 @@ import logging
 import redis
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from src.config.database import db_manager
+from config.database import db_manager
 
 
 logger = logging.getLogger(__name__)

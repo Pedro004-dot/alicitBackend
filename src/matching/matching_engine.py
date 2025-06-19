@@ -10,9 +10,9 @@ from typing import Dict, Any
 import time
 from psycopg2.extras import DictCursor
 
-from src.services.embedding_cache_service import EmbeddingCacheService
-from src.services.deduplication_service import DeduplicationService
-from src.config.database import db_manager
+from services.embedding_cache_service import EmbeddingCacheService
+from services.deduplication_service import DeduplicationService
+from config.database import db_manager
 
 from .vectorizers import (
     BaseTextVectorizer, OpenAITextVectorizer, VoyageAITextVectorizer,

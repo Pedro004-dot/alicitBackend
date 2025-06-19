@@ -21,7 +21,7 @@ def test_sentence_transformers():
     # Teste 1: Carregar serviço diretamente
     print("1️⃣ Testando SentenceTransformerService...")
     try:
-        from src.services.sentence_transformer_service import SentenceTransformerService
+        from services.sentence_transformer_service import SentenceTransformerService
         st_service = SentenceTransformerService()
         
         print("✅ Serviço carregado")
@@ -137,8 +137,8 @@ def test_hybrid_vectorizer():
     print("=" * 60)
     
     try:
-        from src.matching.vectorizers import HybridTextVectorizer
-        from src.config.database import db_manager
+        from matching.vectorizers import HybridTextVectorizer
+        from config.database import db_manager
         
         # Inicializar sistema híbrido
         print("🔄 Inicializando HybridTextVectorizer...")

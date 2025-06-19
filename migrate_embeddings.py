@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
 """
-Script de migração para ajustar dimensões do cache de embeddings
-De 384 para 768 dimensões (NeralMind BERT)
+Script para migrar embeddings antigos para o novo sistema de cache
+Útil quando mudamos de modelo ou reorganizamos o sistema
 """
 
 import sys
 import os
+import logging
+from typing import List, Dict, Any
+from datetime import datetime
+import json
 
 # Adicionar src ao path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
+# Carregar variáveis de ambiente
+from dotenv import load_dotenv
+load_dotenv('config.env')
+
+# Importar componentes necessários
+from config.database import db_manager
 
 def migrate_embedding_dimensions():
     print("🔄 MIGRAÇÃO: Ajustando cache para 768 dimensões")
     print("=" * 60)
     
-    # Carregar variáveis de ambiente
-    from dotenv import load_dotenv
-    load_dotenv('config.env')
-    
     try:
-        from src.config.database import db_manager
-        
         print("🔧 Conectando ao banco...")
         with db_manager.get_connection() as conn:
             with conn.cursor() as cursor:

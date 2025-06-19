@@ -16,7 +16,7 @@ def test_neuralmind_service():
     
     # Importar serviço
     try:
-        from src.services.neuralmind_embedding_service import NeuralMindEmbeddingService
+        from services.neuralmind_embedding_service import NeuralMindEmbeddingService
         service = NeuralMindEmbeddingService()
         
         print("✅ Serviço carregado")

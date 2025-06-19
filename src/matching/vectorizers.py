@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Vetorizadores de texto para matching semântico com cache inteligente
+Implementações de vetorização de texto para matching de licitações
+Sistema multi-modal com cache inteligente e fallbacks
 """
 
 import os
 import logging
+import numpy as np
 from typing import List, Optional, Dict, Any
 from abc import ABC, abstractmethod
-import numpy as np
 
-from src.services.sentence_transformer_service import SentenceTransformerService
-from src.services.embedding_cache_service import EmbeddingCacheService
+from services.sentence_transformer_service import SentenceTransformerService
+from services.embedding_cache_service import EmbeddingCacheService
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class HybridTextVectorizer(BaseTextVectorizer):
     def __init__(self, db_manager=None):
         # Importar db_manager se não fornecido
         if db_manager is None:
-            from src.config.database import db_manager as default_db_manager
+            from config.database import db_manager as default_db_manager
             self.db_manager = default_db_manager
         else:
             self.db_manager = db_manager
@@ -79,7 +80,7 @@ class HybridTextVectorizer(BaseTextVectorizer):
         
         # 2. NeralMind via HuggingFace API (FALLBACK PORTUGUÊS)
         try:
-            from src.services.neuralmind_embedding_service import NeuralMindEmbeddingService
+            from services.neuralmind_embedding_service import NeuralMindEmbeddingService
             self.neuralmind_service = NeuralMindEmbeddingService()
             
             # Teste rápido da conexão (sem log verboso)
