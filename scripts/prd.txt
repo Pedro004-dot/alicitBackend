@@ -1,0 +1,156 @@
+## Product Requirements Document (PRD): Sistema de Matching de Licitações
+
+### 1. Introdução
+
+Este PRD detalha os requisitos para o desenvolvimento de um **Sistema de Matching de Licitações**. O objetivo principal é automatizar a identificação de oportunidades de licitações relevantes para um portfólio de empresas, utilizando dados públicos do Portal Nacional de Contratações Públicas (PNCP) e algoritmos de Processamento de Linguagem Natural (PLN). O sistema busca otimizar o tempo e os recursos das empresas, garantindo que sejam notificadas apenas sobre licitações que realmente se alinham aos seus produtos e serviços.
+
+---
+
+### 2. Metas e Objetivos do Produto
+
+* **Otimizar a Busca por Oportunidades:** Reduzir drasticamente o tempo que as empresas gastam buscando licitações manualmente.
+* **Aumentar a Relevância:** Fornecer apenas licitações altamente relevantes, minimizando o "ruído" de oportunidades inadequadas.
+* **Notificação Proativa:** Alertar as empresas sobre novas licitações assim que forem publicadas e processadas.
+* **Escalabilidade:** Construir uma infraestrutura capaz de suportar um volume crescente de licitações e empresas.
+* **Precisão do Matching:** Atingir uma alta taxa de acerto no matching, com mecanismos para aprimorar a precisão ao longo do tempo.
+
+---
+
+### 3. Escopo do Produto (MVP - Minimum Viable Product)
+
+O MVP focará nas funcionalidades essenciais para entregar valor rapidamente e validar a premissa do produto.
+
+#### 3.1. Funcionalidades de Coleta de Dados
+
+* **Coleta Diária de Licitações PNCP:**
+    * Acesso à API `/contratacoes/publicacao` do PNCP.
+    * Coleta de licitações de **todos os estados brasileiros**.
+    * Filtro por data para coletar as licitações **publicadas nas últimas 24 horas**.
+    * Gerenciamento de paginação para garantir a coleta completa.
+    * Armazenamento dos dados brutos da licitação (cabeçalho) no Banco de Dados Principal.
+    * **Controle de Licitações Processadas:** Mecanismo para identificar e pular licitações já coletadas/processadas, evitando duplicação.
+* **Coleta Detalhada de Itens da Licitação PNCP:**
+    * Para cada licitação recém-coletada, acesso à API `/orgaos/{cnpj}/compras/{anoCompra}/{sequencialCompra}/itens`.
+    * Extração e armazenamento dos detalhes dos itens da licitação no Banco de Dados Principal.
+
+#### 3.2. Funcionalidades de Gestão de Dados (Backend)
+
+* **Cadastro/Gerenciamento de Empresas (via DB):**
+    * Capacidade de inserir, editar e remover empresas no banco de dados.
+    * Campos essenciais por empresa: `id`, `nome_fantasia`, `razao_social`, `cnpj`, `descricao_servicos_produtos` (texto livre descrevendo a atuação da empresa), `palavras_chave_servicos` (lista de termos chave).
+* **Armazenamento de Licitações:**
+    * Tabelas para `licitacoes` e `licitacao_itens` com todos os campos relevantes das APIs do PNCP.
+    * Campos de controle de status e data de processamento.
+* **Armazenamento de Matches:**
+    * Tabela para registrar os matches encontrados entre licitações e empresas, incluindo `licitacao_id`, `empresa_id`, `score_similaridade`, `data_match`, `tipo_match` (ex: "objeto", "itens").
+
+#### 3.3. Funcionalidades de Matching (Core do Sistema)
+
+* **Vetorização de Texto (NLP):**
+    * Uso de modelos de *embeddings* (ex: Sentence Transformers) para transformar `objetoCompra` da licitação e `descricao_servicos_produtos` das empresas em vetores numéricos.
+    * Vetorização da `descricao` de cada item da licitação.
+    * Armazenamento dos vetores no **Banco de Dados Vetorial**.
+* **Processo de Matching em Duas Fases:**
+    * **Fase 1 (Triagem - Objeto da Compra vs. Descrição da Empresa):**
+        * Cálculo da **Similaridade de Cosseno** entre o vetor do `objetoCompra` de cada nova licitação e o vetor `descricao_servicos_produtos` de *todas* as empresas do portfólio.
+        * Filtragem por um **limiar de similaridade** (`SIMILARITY_THRESHOLD_PHASE1`). Apenas licitações que atingem o limiar com pelo menos uma empresa avançam.
+    * **Fase 2 (Validação - Itens da Licitação vs. Descrição da Empresa/Itens Específicos):**
+        * Para licitações que passaram na Fase 1, buscar os itens detalhados via API do PNCP.
+        * Calcular a **Similaridade de Cosseno** entre os vetores de cada item da licitação e o vetor `descricao_servicos_produtos` da empresa (ou, idealmente, vetores de itens/serviços específicos da empresa).
+        * Se um número mínimo de itens ou um score médio de itens atingir um **limiar de similaridade** (`SIMILARITY_THRESHOLD_PHASE2`), o match é confirmado.
+* **Geração de Recomendações:**
+    * Identificar as licitações que confirmaram o match na Fase 2.
+    * Registrar o match no banco de dados com score e tipo.
+
+#### 3.4. Funcionalidades de Automação e Orquestração
+
+* **Agendamento Diário:**
+    * Execução automática da rotina de busca e matching diariamente (ex: via `cron job`, `APScheduler`, ou serviço de nuvem).
+* **Logs e Monitoramento:**
+    * Registro detalhado das operações, erros e resultados para fins de depuração e auditoria.
+
+---
+
+### 4. Requisitos Técnicos e de Infraestrutura
+
+#### 4.1. Arquitetura Proposta (MVP)
+
+* **Linguagem de Programação:** Python 3.9+
+* **Banco de Dados Principal:** PostgreSQL (para dados estruturados de licitações, empresas e matches).
+* **Banco de Dados Vetorial:** PgVector (extensão do PostgreSQL para armazenamento e busca de embeddings). Escolha por simplificar a arquitetura inicial.
+* **Biblioteca de Requisições HTTP:** `requests`.
+* **Biblioteca de PLN:** `sentence-transformers` (para embeddings), `numpy` (para cálculos de similaridade).
+* **Orquestração/Agendamento:** `APScheduler` (para ambiente de desenvolvimento/protótipo) ou `Cron Job`/`Task Scheduler` (para ambiente de produção).
+* **Containerização (Opcional, mas Recomendado):** Docker para empacotar a aplicação e suas dependências.
+
+#### 4.2. Requisitos de Performance
+
+* **Latência da Coleta:** A coleta diária deve ser concluída em um tempo razoável (ex: poucas horas, dependendo do volume diário do PNCP).
+* **Latência do Matching:** O processo de matching para as licitações coletadas deve ser concluído em tempo hábil para permitir notificações proativas.
+* **Escalabilidade de Dados:** A infraestrutura deve ser capaz de armazenar milhares de licitações por dia e centenas de empresas.
+
+#### 4.3. Requisitos de Segurança
+
+* **Credenciais de API:** Armazenar chaves de API (se aplicável a outras APIs futuras) de forma segura (variáveis de ambiente, gerenciador de segredos).
+* **Acesso ao Banco de Dados:** Credenciais de banco de dados protegidas.
+
+#### 4.4. Requisitos de Confiabilidade
+
+* **Tratamento de Erros:** Resiliência a falhas de rede, timeouts de API e erros na API.
+* **Re-tentativas:** Estratégia de re-tentativa para chamadas de API que falharem temporariamente.
+* **Logging:** Logs detalhados para facilitar a depuração e o monitoramento.
+
+---
+
+### 5. Cenários de Uso
+
+#### 5.1. Cenário: Coleta e Matching Diário de Novas Licitações
+
+1.  **Agendador (Scheduler):** Inicia o processo `process_daily_bids` diariamente às 02:00 AM.
+2.  **Coletor de Licitações:**
+    * Consulta a API `/contratacoes/publicacao` do PNCP para todas as UFs, para as últimas 24 horas.
+    * Verifica se a licitação já foi processada.
+    * Salva novas licitações na tabela `licitacoes` do PostgreSQL.
+3.  **Coletor de Itens:**
+    * Para cada nova licitação, consulta a API `/orgao/{cnpj}/compras/{anoCompra}/{sequencialCompra}/itens`.
+    * Salva os itens na tabela `licitacao_itens` do PostgreSQL.
+4.  **Vetorizador:**
+    * Extrai `objetoCompra` e `descricao` dos itens da licitação.
+    * Gera *embeddings* para esses textos usando o Sentence Transformer.
+    * Armazena os embeddings na tabela `licitacoes_embeddings` no PgVector.
+5.  **Motor de Matching:**
+    * **Fase 1:** Compara o embedding do `objetoCompra` da nova licitação com os embeddings de `descricao_servicos_produtos` de todas as empresas do portfólio.
+    * **Fase 2:** Para licitações que passaram na Fase 1, compara os embeddings dos itens da licitação com os embeddings das empresas.
+    * Se o `score_similaridade` atender aos limiares em ambas as fases, um match é identificado.
+6.  **Gravador de Matches:**
+    * Registra os matches encontrados na tabela `matches` do PostgreSQL.
+
+#### 5.2. Cenário: Adição de Nova Empresa ao Portfólio
+
+1.  **Usuário/Admin:** Insere os dados da nova empresa (nome, descrição, etc.) no PostgreSQL.
+2.  **Processo de Vetorização (Manual/Trigger):** Um processo (pode ser manual inicialmente, depois automatizado por um *trigger* ou fila) pega a `descricao_servicos_produtos` da nova empresa.
+3.  **Vetorizador:** Gera o embedding para a descrição da nova empresa.
+4.  **Armazenamento de Embedding:** Salva o embedding na tabela `empresas_embeddings` no PgVector.
+5.  **Re-matching (Opcional):** A nova empresa pode ser matched retrospectivamente com licitações já processadas (ou futuras).
+
+---
+
+### 6. Métricas de Sucesso
+
+* **Taxa de Acerto (Precision):** Percentual de licitações recomendadas que são consideradas relevantes pelas empresas. Objetivo: >70%.
+* **Taxa de Cobertura (Recall):** Percentual de licitações relevantes que o sistema de fato encontrou. Objetivo: >80%.
+* **Latência de Processamento:** Tempo médio para uma licitação ser coletada, processada e ter um match gerado. Objetivo: < 2 horas desde a publicação.
+* **Volume de Matches:** Número de matches únicos gerados por dia/semana.
+* **Uptime:** Disponibilidade do serviço. Objetivo: >99.9%.
+
+---
+
+### 7. Próximos Passos (Além do MVP)
+
+* **Interface de Usuário:** Construção de um painel web para as empresas visualizarem seus matches, gerenciarem seus perfis e darem feedback.
+* **Notificações:** Integração com e-mail, WhatsApp ou outros canais para notificar empresas sobre novos matches.
+* **Feedback Loop:** Sistema para empresas avaliarem a relevância dos matches, usando esse feedback para refinar os algoritmos de PLN e os limiares.
+* **Parâmetros Configurações:** Capacidade de ajustar limiares de similaridade e outros parâmetros via interface administrativa.
+* **Dashboard de Análise:** Visualizações do desempenho do sistema, volume de licitações, etc.
+* **Otimização do Modelo de PLN:** Fine-tuning de modelos de *embeddings* com dados específicos de licitações e empresas.
+* **Integração com Outras Fontes de Licitações:** Expandir a coleta para outros portais (ex: licitações estaduais/municipais específicas, licitações de grandes empresas).

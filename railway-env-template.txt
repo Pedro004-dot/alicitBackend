@@ -1,0 +1,38 @@
+# ===============================================
+# VARIÁVEIS DE AMBIENTE PARA RAILWAY
+# Copie e cole no painel do Railway
+# ===============================================
+
+# === CONFIGURAÇÕES BÁSICAS ===
+PORT=8080
+FLASK_ENV=production
+FLASK_DEBUG=False
+PYTHONPATH=/app/src
+
+# === BANCO DE DADOS (OBRIGATÓRIO) ===
+DATABASE_URL=postgresql://postgres.hdlowzlkwrboqfzjewom:[SUA_SENHA]@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+
+# === SUPABASE (OBRIGATÓRIO) ===
+SUPABASE_URL=https://hdlowzlkwrboqfzjewom.supabase.co
+SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhkbG93emxrd3Jib3Fmempld29tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzQ0NzI4NzQsImV4cCI6MjA1MDA0ODg3NH0.VoyageAI_API_KEY_AQUI
+
+# === APIs DE IA (OBRIGATÓRIAS) ===
+VOYAGE_API_KEY=pa-[SUA_CHAVE_VOYAGE]
+OPENAI_API_KEY=sk-[SUA_CHAVE_OPENAI]
+
+# === APIS OPCIONAIS ===
+PERPLEXITY_API_KEY=pplx-[SUA_CHAVE_PERPLEXITY]
+REDIS_URL=redis://localhost:6379
+
+# === CONFIGURAÇÕES DE PERFORMANCE ===
+GUNICORN_WORKERS=2
+GUNICORN_TIMEOUT=120
+GUNICORN_KEEPALIVE=60
+GUNICORN_MAX_REQUESTS=1000
+
+# ===============================================
+# INSTRUÇÕES:
+# 1. Substitua [SUA_SENHA], [SUA_CHAVE_VOYAGE], etc.
+# 2. Cole no Railway em Settings > Variables
+# 3. Clique em "Add Variable" para cada linha
+# =============================================== 

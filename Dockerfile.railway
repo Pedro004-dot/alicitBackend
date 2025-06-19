@@ -1,0 +1,116 @@
+# ===============================================
+# DOCKERFILE OTIMIZADO PARA RAILWAY DEPLOYMENT
+# Multi-stage build, health checks, security
+# COM SUPORTE A SENTENCE-TRANSFORMERS
+# ===============================================
+
+# Stage 1: Build dependencies
+FROM python:3.11-slim as builder
+
+# Prevent Python from writing pyc files and buffering stdout/stderr
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies for building (including ML dependencies)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    g++ \
+    pkg-config \
+    libpq-dev \
+    libopenblas-dev \
+    liblapack-dev \
+    gfortran \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy requirements and install Python dependencies
+COPY requirements-railway.txt .
+
+# Install dependencies with specific flags for PyTorch CPU
+RUN pip install --upgrade pip && \
+    pip install torch==2.0.1 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install -r requirements-railway.txt
+
+# ===============================================
+# Stage 2: Production runtime
+FROM python:3.11-slim as production
+
+# Prevent Python from writing pyc files and buffering stdout/stderr
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+# Install only runtime dependencies (including ML runtime libs)
+RUN apt-get update && apt-get install -y \
+    libpq5 \
+    curl \
+    libmagic1 \
+    file \
+    libopenblas0 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Copy virtual environment from builder stage
+COPY --from=builder /opt/venv /opt/venv
+
+# Create app user for security
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Set work directory
+WORKDIR /app
+
+# Copy application code (agora da raiz)
+COPY src/ ./src/
+COPY requirements-railway.txt .
+
+# Create necessary directories (including cache for transformers)
+RUN mkdir -p logs uploads temp storage cache/transformers && \
+    chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Railway expects the app to run on PORT from environment
+ENV PORT=8080
+ENV FLASK_ENV=production
+ENV FLASK_DEBUG=False
+
+# ML optimizations for Railway
+ENV TOKENIZERS_PARALLELISM=false
+ENV OMP_NUM_THREADS=2
+ENV MKL_NUM_THREADS=2
+ENV TRANSFORMERS_CACHE=/app/cache/transformers
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:$PORT/health || exit 1
+
+# Expose port
+EXPOSE $PORT
+
+# Change to src directory and run gunicorn
+WORKDIR /app/src
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8080", "--timeout", "120", "--keep-alive", "60", "--max-requests", "1000", "--max-requests-jitter", "100", "--preload", "app:app"]
+
+# ===============================================
+# RAILWAY OPTIMIZATION NOTES:
+# ===============================================
+# 1. Multi-stage build reduces final image size
+# 2. PyTorch CPU-only for faster builds
+# 3. Health checks for Railway monitoring  
+# 4. Port from env variable (Railway standard)
+# 5. Non-root user for security
+# 6. Gunicorn optimized for Railway limits
+# 7. Preload app for faster response times
+# 8. ML libraries optimized for Railway resources
+# =============================================== 

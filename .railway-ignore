@@ -1,0 +1,76 @@
+# ===============================================
+# RAILWAY IGNORE - Arquivos não necessários para deploy
+# ===============================================
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Cache and temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.cache/
+cache/
+logs/
+*.log
+
+# Development files
+.git/
+.gitignore
+*.md
+README*
+CHANGELOG*
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+test_*.py
+*_test.py
+tests/
+pytest.ini
+.pytest_cache/
+
+# Migration and utility scripts
+migrate_*.py
+fix_*.py
+debug_*.py
+test_*.py
+extract_*.py
+corrigir_*.py
+
+# Exceto o script de verificação ML (útil para debug)
+!check_ml_dependencies.py
+
+# Local development files
+.env
+config.env.local
+railway-env-template.txt
+
+# Storage directories (será criado automaticamente)
+storage/
+uploads/
+temp/
+
+# Arquivos específicos do projeto
+Aptfile
+.dockerignore
+SISTEMA_AUTENTICACAO_MODULAR.md
+RAILWAY_DEPLOY.md
+deploy-railway.sh
+supabase_schema_query.py 
