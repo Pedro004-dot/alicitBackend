@@ -11,6 +11,7 @@ from pathlib import Path
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Importar nova configuração de logging
 from config.logging_config import setup_logging
@@ -277,10 +278,44 @@ def _register_blueprints(app: Flask) -> None:
             except Exception as e:
                 return jsonify({'error': f'Arquivo não encontrado: {e}'}), 404
         
-        # Rota de health check
+        # Rota de health check aprimorado
         @app.route('/health')
         def health_check():
-            return jsonify({'status': 'healthy', 'message': 'API funcionando corretamente'})
+            """Health check completo da aplicação"""
+            try:
+                # Verificar conexão com banco
+                from config.database import get_db_manager
+                db_manager = get_db_manager()
+                health_status = db_manager.get_health_status()
+                
+                response = {
+                    'status': 'healthy',
+                    'message': 'API funcionando corretamente',
+                    'timestamp': datetime.now().isoformat(),
+                    'environment': os.getenv('RAILWAY_ENVIRONMENT_NAME', 'development'),
+                    'port': os.getenv('PORT', 'default'),
+                    'database': health_status.get('connections', {}).get('postgresql', {}).get('status', 'unknown'),
+                    'endpoints': 64,
+                    'version': '1.0.0'
+                }
+                
+                return jsonify(response), 200
+                
+            except Exception as e:
+                error_response = {
+                    'status': 'unhealthy',
+                    'message': f'Erro no health check: {str(e)}',
+                    'timestamp': datetime.now().isoformat(),
+                    'environment': os.getenv('RAILWAY_ENVIRONMENT_NAME', 'development')
+                }
+                app.logger.error(f"❌ Health check failed: {e}")
+                return jsonify(error_response), 503
+        
+        # Health check simples para Railway
+        @app.route('/healthz')
+        def simple_health():
+            """Health check simples para Railway"""
+            return "OK", 200
         
     except ImportError as e:
         app.logger.error(f"❌ Erro ao importar blueprints: {e}")
@@ -332,30 +367,12 @@ def main():
         
         # Verificar se está no Railway (produção)
         if os.getenv('RAILWAY_ENVIRONMENT_NAME'):
-            print("🚄 RAILWAY DETECTED - Executando com Gunicorn")
+            print("🌍 RAILWAY DETECTED - Aplicação pronta para Gunicorn")
             print(f"🌍 Environment: {os.getenv('RAILWAY_ENVIRONMENT_NAME')}")
-            
-            # Configurar para gunicorn
-            port = int(os.getenv('PORT', 8080))
-            
-            # Usar gunicorn para produção
-            import subprocess
-            import sys
-            
-            cmd = [
-                'gunicorn', 
-                '-w', '2',  # 2 workers para Railway
-                '-b', f'0.0.0.0:{port}',
-                '--timeout', '120',
-                '--keep-alive', '60',
-                '--max-requests', '1000',
-                '--max-requests-jitter', '100',
-                '--preload',
-                'app:app'  # Módulo:variável
-            ]
-            
-            print(f"🚀 Executando: {' '.join(cmd)}")
-            subprocess.run(cmd)
+            print(f"🔗 Port: {os.getenv('PORT', 8080)}")
+            print("✅ Use: gunicorn -w 2 -b 0.0.0.0:8080 --preload app:app")
+            # No Railway, o Dockerfile chama gunicorn diretamente
+            return app
         else:
             print("🧪 DESENVOLVIMENTO - Executando Flask dev server")
             # Desenvolvimento local

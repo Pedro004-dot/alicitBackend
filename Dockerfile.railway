@@ -92,14 +92,14 @@ ENV TRANSFORMERS_CACHE=/app/cache/transformers
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:$PORT/health || exit 1
+    CMD curl -f http://localhost:$PORT/healthz || exit 1
 
 # Expose port
 EXPOSE $PORT
 
 # Change to src directory and run gunicorn
-WORKDIR /app
-CMD ["python", "run_app.py"]
+WORKDIR /app/src
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8080", "--timeout", "120", "--keep-alive", "60", "--max-requests", "1000", "--max-requests-jitter", "100", "--preload", "wsgi:application"]
 
 # ===============================================
 # RAILWAY OPTIMIZATION NOTES:
