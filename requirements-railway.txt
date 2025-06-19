@@ -80,13 +80,13 @@ torch==2.0.1
 torchvision==0.15.2  
 torchaudio==2.0.2
 
-# HuggingFace & Transformers
-huggingface_hub==0.23.4
-transformers==4.35.0
-tokenizers==0.15.2
+# HuggingFace & Transformers (versões compatíveis)
+huggingface_hub>=0.16.4,<1.0.0
+transformers>=4.30.0,<5.0.0
+# tokenizers será instalado automaticamente como dependência do transformers
 
 # Sentence Transformers
-sentence-transformers==2.7.0
+sentence-transformers>=2.2.0,<3.0.0
 
 # ML Utils
 scikit-learn==1.6.1
