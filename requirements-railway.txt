@@ -75,8 +75,10 @@ blinker==1.9.0
 # MACHINE LEARNING & EMBEDDINGS
 # ===================================
 
-# PyTorch será instalado diretamente no Dockerfile com flags CPU
-# torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2
+# PyTorch (versão CPU compatível com Railway)
+torch==2.0.1
+torchvision==0.15.2  
+torchaudio==2.0.2
 
 # HuggingFace & Transformers
 huggingface_hub==0.23.4
