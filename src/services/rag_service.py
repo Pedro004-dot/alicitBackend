@@ -337,7 +337,7 @@ class RAGService:
             }
     
     def _generate_embedding_with_fallback(self, text: str) -> List[float]:
-        """🆕 OTIMIZADO: Gera embedding priorizando APIs pagas: VoyageAI -> OpenAI -> SentenceTransformers"""
+        """🆕 OTIMIZADO: Gera embedding priorizando APIs pagas: VoyageAI -> OpenAI small -> SentenceTransformers (último recurso)"""
         
         # 1. PRIMÁRIO: VoyageAI (API paga - ideal para Railway)
         try:
@@ -348,14 +348,30 @@ class RAGService:
         except Exception as e:
             logger.warning(f"⚠️ VoyageAI falhou: {e}")
         
-        # 2. FALLBACK: OpenAI (API paga - bom fallback)
+        # 2. FALLBACK: OpenAI small (API paga - mais barato que large)
         try:
-            from matching.vectorizers import OpenAITextVectorizer
-            openai_vectorizer = OpenAITextVectorizer()
-            embedding = openai_vectorizer.vectorize(text)
-            if embedding:
-                logger.debug("✅ OpenAI fallback embedding gerado")
-                return embedding
+            import openai
+            import os
+            
+            openai_api_key = os.getenv('OPENAI_API_KEY')
+            if openai_api_key:
+                client = openai.OpenAI(api_key=openai_api_key)
+                
+                response = client.embeddings.create(
+                    model="text-embedding-3-small",  # Mais barato: $0.02/1M tokens
+                    input=text,
+                    encoding_format="float"
+                )
+                
+                embedding = response.data[0].embedding
+                if embedding:
+                    logger.debug("✅ OpenAI small embedding gerado")
+                    return embedding
+            else:
+                logger.warning("⚠️ OPENAI_API_KEY não encontrada para fallback")
+                
+        except ImportError:
+            logger.warning("⚠️ Biblioteca openai não instalada")
         except Exception as e:
             logger.warning(f"⚠️ OpenAI fallback falhou: {e}")
         
@@ -364,7 +380,8 @@ class RAGService:
             try:
                 embedding = self.sentence_transformer_service.generate_single_embedding(text)
                 if embedding:
-                    logger.debug("✅ SentenceTransformers (local) embedding gerado")
+                    logger.debug("✅ SentenceTransformers (local) embedding gerado - ÚLTIMO RECURSO")
+                    logger.warning("⚠️ Considere configurar VoyageAI ou OpenAI para melhor performance")
                     return embedding
             except Exception as e:
                 logger.warning(f"⚠️ SentenceTransformers falhou: {e}")
