@@ -2,6 +2,7 @@ import logging
 from typing import Dict, Any, Optional, List
 import time
 from datetime import datetime
+import re
 
 # Importar componentes RAG
 from rag.document_processor import DocumentProcessor
@@ -20,26 +21,60 @@ class RAGService:
     """Serviço principal de RAG com cache inteligente"""
     
     def __init__(self, db_manager, unified_processor, openai_api_key: str, 
-                 redis_host: str = "localhost"):
+                 **kwargs):
         self.db_manager = db_manager
         self.unified_processor = unified_processor
         
-        # 🆕 NOVO: Inicializar cache e deduplicação
-        self.cache_service = EmbeddingCacheService(db_manager, redis_host)
+        # 🆕 NOVO: Inicializar cache e deduplicação (Railway ready)
+        self.cache_service = EmbeddingCacheService(db_manager)
         self.dedup_service = DeduplicationService(db_manager, self.cache_service)
         
         # Componentes RAG existentes
         self.document_processor = DocumentProcessor()
         self.embedding_service = EmbeddingService()  # Manter VoyageAI como fallback
         self.vector_store = VectorStore(db_manager)
-        self.cache_manager = CacheManager(redis_host=redis_host)
+        self.cache_manager = CacheManager()  # Usa configuração unificada
         self.retrieval_engine = RetrievalEngine(openai_api_key)
+        
+        # 🔧 CORREÇÃO: Inicializar SentenceTransformerService uma única vez
+        try:
+            from services.sentence_transformer_service import SentenceTransformerService
+            self.sentence_transformer_service = SentenceTransformerService()
+            logger.info("✅ SentenceTransformerService inicializado (singleton)")
+        except Exception as e:
+            logger.warning(f"⚠️ SentenceTransformerService não disponível: {e}")
+            self.sentence_transformer_service = None
         
         logger.info("✅ RAGService inicializado com cache inteligente")
     
     def process_or_query(self, licitacao_id: str, query: str) -> Dict[str, Any]:
         """Função principal: processa documentos se necessário e responde query"""
         try:
+            # 🆕 Validar licitacao_id antes de qualquer processamento
+            if not licitacao_id or licitacao_id.lower() in ['undefined', 'null', 'none', '']:
+                logger.error(f"❌ licitacao_id inválido recebido: '{licitacao_id}'")
+                return {
+                    'success': False,
+                    'error': 'ID da licitação é obrigatório e deve ser um UUID válido',
+                    'invalid_input': {
+                        'received_id': licitacao_id,
+                        'expected': 'UUID válido (ex: 123e4567-e89b-12d3-a456-426614174000)'
+                    }
+                }
+            
+            # 🆕 Verificar se parece com UUID (formato básico)
+            uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+            if not uuid_pattern.match(licitacao_id):
+                logger.error(f"❌ licitacao_id não parece ser um UUID: '{licitacao_id}'")
+                return {
+                    'success': False,
+                    'error': 'Formato de UUID inválido para licitacao_id',
+                    'invalid_input': {
+                        'received_id': licitacao_id,
+                        'expected_format': 'UUID (ex: 123e4567-e89b-12d3-a456-426614174000)'
+                    }
+                }
+            
             logger.info(f"🚀 Iniciando RAG para licitação: {licitacao_id}")
             
             # 1. Verificar cache primeiro
@@ -188,31 +223,60 @@ class RAGService:
                         self._update_document_status(documento['id'], 'erro')
                         continue
                     
-                    # 🆕 NOVO: Gerar embeddings com cache
+                    # 🔧 OTIMIZAÇÃO: Gerar embeddings em lotes para máxima eficiência
                     chunk_texts = [chunk.text for chunk in chunks]
                     embeddings = []
+                    texts_to_process = []
+                    indices_to_process = []
                     
-                    # Verificar cache para cada chunk
-                    for chunk_text in chunk_texts:
-                        cached_embedding = self.cache_service.get_embedding_from_cache(
-                            chunk_text, "sentence-transformers"
-                        )
-                        
-                        if cached_embedding:
-                            embeddings.append(cached_embedding)
+                    # 🔧 OTIMIZAÇÃO: Verificar cache em lote (uma única query DB)
+                    cached_embeddings_map = self._batch_get_embeddings_from_cache(chunk_texts)
+                    
+                    for i, chunk_text in enumerate(chunk_texts):
+                        if chunk_text in cached_embeddings_map:
+                            embeddings.append((i, cached_embeddings_map[chunk_text]))
                             embedding_cache_hits += 1
                         else:
-                            # Gerar novo embedding (usar sentence-transformers primeiro)
-                            new_embedding = self._generate_embedding_with_fallback(chunk_text)
-                            embeddings.append(new_embedding)
+                            texts_to_process.append(chunk_text)
+                            indices_to_process.append(i)
+                    
+                    # 🚀 OTIMIZAÇÃO: Usar VoyageAI como primário (API paga) para Railway
+                    if texts_to_process:
+                        logger.info(f"🔄 Gerando embeddings VoyageAI para {len(texts_to_process)} textos em lote")
+                        
+                        # 1. Tentar VoyageAI primeiro (API paga - não consome servidor)
+                        batch_embeddings = self.embedding_service.generate_embeddings(texts_to_process)
+                        
+                        if batch_embeddings and len(batch_embeddings) == len(texts_to_process):
+                            # 🔧 OTIMIZAÇÃO: Cachear embeddings em lote (uma única transação DB)
+                            texts_and_embeddings_to_cache = []
+                            for j, (text, embedding, original_index) in enumerate(
+                                zip(texts_to_process, batch_embeddings, indices_to_process)
+                            ):
+                                embeddings.append((original_index, embedding))
+                                texts_and_embeddings_to_cache.append((text, embedding))
                             
-                            if new_embedding:
-                                self.cache_service.save_embedding_to_cache(
-                                    chunk_text, new_embedding, "sentence-transformers"
-                                )
+                            # Salvar todos os embeddings em uma única transação
+                            self._batch_save_embeddings_to_cache(texts_and_embeddings_to_cache)
+                            logger.info(f"✅ VoyageAI batch processing concluído")
+                            
+                        else:
+                            logger.warning(f"⚠️ VoyageAI batch falhou, tentando fallback individual...")
+                            # Fallback para processamento individual com APIs pagas
+                            for text, original_index in zip(texts_to_process, indices_to_process):
+                                new_embedding = self._generate_embedding_with_fallback(text)
+                                embeddings.append((original_index, new_embedding))
+                                if new_embedding:
+                                    self.cache_service.save_embedding_to_cache(
+                                        text, new_embedding, "voyage-ai"
+                                    )
+                    
+                    # Ordenar embeddings pela ordem original dos chunks
+                    embeddings.sort(key=lambda x: x[0])
+                    final_embeddings = [emb for _, emb in embeddings]
                     
                     # Verificar se todos embeddings foram gerados
-                    valid_embeddings = [emb for emb in embeddings if emb]
+                    valid_embeddings = [emb for emb in final_embeddings if emb]
                     
                     if len(valid_embeddings) != len(chunks):
                         logger.error(f"❌ Embeddings incompletos para {documento['titulo']}")
@@ -273,39 +337,138 @@ class RAGService:
             }
     
     def _generate_embedding_with_fallback(self, text: str) -> List[float]:
-        """🆕 NOVO: Gera embedding com fallback sentence-transformers -> voyage -> openai"""
+        """🆕 OTIMIZADO: Gera embedding priorizando APIs pagas: VoyageAI -> OpenAI -> SentenceTransformers"""
         
-        # 1. Tentar sentence-transformers primeiro (se disponível)
-        try:
-            from services.sentence_transformer_service import SentenceTransformerService
-            st_service = SentenceTransformerService()
-            embedding = st_service.generate_single_embedding(text)
-            if embedding:
-                return embedding
-        except Exception as e:
-            logger.warning(f"⚠️ SentenceTransformers falhou: {e}")
-        
-        # 2. Fallback para VoyageAI
+        # 1. PRIMÁRIO: VoyageAI (API paga - ideal para Railway)
         try:
             embedding = self.embedding_service.generate_single_embedding(text)
             if embedding:
+                logger.debug("✅ VoyageAI embedding gerado")
                 return embedding
         except Exception as e:
             logger.warning(f"⚠️ VoyageAI falhou: {e}")
         
-        # 3. Último recurso: usar vectorizer do matching
+        # 2. FALLBACK: OpenAI (API paga - bom fallback)
         try:
             from matching.vectorizers import OpenAITextVectorizer
             openai_vectorizer = OpenAITextVectorizer()
             embedding = openai_vectorizer.vectorize(text)
             if embedding:
+                logger.debug("✅ OpenAI fallback embedding gerado")
                 return embedding
         except Exception as e:
             logger.warning(f"⚠️ OpenAI fallback falhou: {e}")
         
-        logger.warning("🔄 Todos os métodos de embedding falharam")
+        # 3. ÚLTIMO RECURSO: SentenceTransformers (local - consome servidor)
+        if self.sentence_transformer_service:
+            try:
+                embedding = self.sentence_transformer_service.generate_single_embedding(text)
+                if embedding:
+                    logger.debug("✅ SentenceTransformers (local) embedding gerado")
+                    return embedding
+            except Exception as e:
+                logger.warning(f"⚠️ SentenceTransformers falhou: {e}")
+        
+        logger.error("❌ TODOS os métodos de embedding falharam")
         return []
     
+    def _batch_get_embeddings_from_cache(self, texts: List[str]) -> Dict[str, List[float]]:
+        """🔧 OTIMIZAÇÃO: Busca múltiplos embeddings em uma única query DB"""
+        try:
+            import hashlib
+            text_hash_map = {}
+            hash_to_text_map = {}
+            
+            # Criar mapa de hash para texto
+            for text in texts:
+                text_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
+                text_hash_map[text] = text_hash
+                hash_to_text_map[text_hash] = text
+            
+            # Buscar todos os embeddings em uma única query
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    hashes = list(hash_to_text_map.keys())
+                    if not hashes:
+                        return {}
+                    
+                    # Usar ANY para buscar múltiplos hashes
+                    cursor.execute("""
+                        SELECT text_hash, embedding FROM embedding_cache 
+                        WHERE text_hash = ANY(%s) AND model_name = %s
+                    """, (hashes, "sentence-transformers"))
+                    
+                    results = cursor.fetchall()
+                    
+                    # Construir mapa de resultado
+                    cached_embeddings = {}
+                    for text_hash, embedding in results:
+                        if text_hash in hash_to_text_map:
+                            original_text = hash_to_text_map[text_hash]
+                            cached_embeddings[original_text] = embedding
+                    
+                    if cached_embeddings:
+                        logger.info(f"⚡ {len(cached_embeddings)} embeddings encontrados no cache em lote")
+                    
+                    return cached_embeddings
+                    
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar embeddings em lote: {e}")
+            return {}
+
+    def _batch_save_embeddings_to_cache(self, texts_and_embeddings: List[tuple]) -> bool:
+        """🔧 OTIMIZAÇÃO: Salva múltiplos embeddings em uma única transação DB"""
+        try:
+            import hashlib
+            batch_data = []
+            seen_hashes = set()  # Para deduplificar
+            
+            for text, embedding in texts_and_embeddings:
+                text_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
+                
+                # 🔧 CORREÇÃO: Pular duplicatas no mesmo batch
+                if text_hash in seen_hashes:
+                    logger.debug(f"⚠️ Hash duplicado no batch, pulando: {text_hash[:8]}...")
+                    continue
+                
+                seen_hashes.add(text_hash)
+                text_preview = text[:100] + "..." if len(text) > 100 else text
+                batch_data.append((text_hash, text_preview, embedding, "sentence-transformers"))
+            
+            if not batch_data:
+                logger.warning("⚠️ Nenhum dado único para salvar no batch")
+                return True
+            
+            # Salvar todos em uma única transação
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Usar execute_values para inserção em lote (muito mais rápido)
+                    from psycopg2.extras import execute_values
+                    execute_values(
+                        cursor,
+                        """
+                        INSERT INTO embedding_cache (text_hash, text_preview, embedding, model_name)
+                        VALUES %s
+                        ON CONFLICT (text_hash) DO UPDATE SET
+                            accessed_at = NOW(),
+                            access_count = embedding_cache.access_count + 1
+                        """,
+                        batch_data,
+                        template=None,
+                        page_size=100
+                    )
+                    conn.commit()
+            
+            logger.info(f"✅ {len(batch_data)} embeddings únicos salvos em lote (de {len(texts_and_embeddings)} originais)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao salvar embeddings em lote: {e}")
+            # Fallback para salvamento individual
+            for text, embedding in texts_and_embeddings:
+                self.cache_service.save_embedding_to_cache(text, embedding, "sentence-transformers")
+            return False
+
     def _chunk_to_dict(self, chunk) -> Dict[str, Any]:
         """Converte chunk para dicionário"""
         return {

@@ -12,7 +12,21 @@ logger = logging.getLogger(__name__)
 class SentenceTransformerService:
     """Sentence Transformers otimizado para Railway"""
     
+    _instances = {}  # Cache de instâncias por modelo
+    
+    def __new__(cls, model_name: str = "neuralmind/bert-base-portuguese-cased"):
+        # Implementar singleton por modelo
+        if model_name not in cls._instances:
+            instance = super().__new__(cls)
+            cls._instances[model_name] = instance
+            instance._initialized = False
+        return cls._instances[model_name]
+    
     def __init__(self, model_name: str = "neuralmind/bert-base-portuguese-cased"):
+        # Evitar re-inicialização
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+            
         self.model_name = model_name
         self.device = 'cpu'  # Railway não tem GPU
         self.model = None
@@ -20,8 +34,9 @@ class SentenceTransformerService:
         # Configurações de otimização para CPU
         self._configure_cpu_optimization()
         
-        # Carregar modelo
+        # Carregar modelo apenas uma vez
         self._load_model()
+        self._initialized = True
     
     def _configure_cpu_optimization(self):
         """Otimizações específicas para CPU no Railway"""
@@ -35,9 +50,8 @@ class SentenceTransformerService:
         
         logger.info("🔧 Configurações CPU aplicadas para Railway")
     
-    @lru_cache(maxsize=1)
     def _load_model(self):
-        """Carrega modelo com cache (singleton)"""
+        """Carrega modelo apenas uma vez por instância"""
         try:
             logger.info(f"📥 Carregando {self.model_name}...")
             
@@ -62,7 +76,7 @@ class SentenceTransformerService:
             self.model = None
             raise
     
-    def generate_embeddings(self, texts: List[str], batch_size: int = 16) -> Optional[List[List[float]]]:
+    def generate_embeddings(self, texts: List[str], batch_size: int = 32) -> Optional[List[List[float]]]:
         """Gera embeddings otimizado para CPU"""
         if not self.model:
             logger.error("❌ Modelo não carregado")

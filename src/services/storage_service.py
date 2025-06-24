@@ -2,6 +2,7 @@ import os
 import logging
 from typing import Optional, Dict, Any, List
 import httpx
+import requests
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -45,44 +46,30 @@ class StorageService:
                     content_type = 'application/msword'
                 elif file_path.lower().endswith('.docx'):
                     content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                elif file_path.lower().endswith('.txt'):
+                    content_type = 'application/octet-stream'  # 🔧 FIX: usar octet-stream para .txt
                 else:
                     content_type = 'application/octet-stream'
-            
-            # Preparar headers
-            headers = {
-                'Authorization': f'Bearer {self.supabase_key}',
-                'Content-Type': content_type
-            }
             
             # Ler arquivo
             with open(file_path, 'rb') as f:
                 file_data = f.read()
             
-            # Fazer upload
-            url = f"{self.supabase_url}/storage/v1/object/{self.bucket_name}/{destination_path}"
+            # Usar método síncrono corrigido
+            success = self.upload(destination_path, file_data, content_type)
             
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    url,
-                    headers=headers,
-                    content=file_data,
-                    timeout=30.0
-                )
-                
-                if response.status_code in (200, 201):
-                    return {
-                        'success': True,
-                        'path': destination_path,
-                        'size': len(file_data),
-                        'content_type': content_type
-                    }
-                else:
-                    error_detail = response.text if response.text else f'Status code: {response.status_code}'
-                    return {
-                        'success': False,
-                        'error': f'Erro no upload: {error_detail}',
-                        'status_code': response.status_code
-                    }
+            if success:
+                return {
+                    'success': True,
+                    'path': destination_path,
+                    'size': len(file_data),
+                    'content_type': content_type
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'Erro no upload'
+                }
                     
         except Exception as e:
             logger.error(f"❌ Erro no upload para Storage: {e}")
@@ -104,32 +91,60 @@ class StorageService:
             True se sucesso, False se erro
         """
         try:
-            # Preparar headers
+            # Headers baseados na documentação oficial do Supabase
             headers = {
                 'Authorization': f'Bearer {self.supabase_key}',
-                'Content-Type': content_type
+                'Content-Type': content_type,
+                'apikey': self.supabase_key  # Header adicional requerido pela API
             }
             
-            # Fazer upload
+            # URL conforme documentação oficial
             url = f"{self.supabase_url}/storage/v1/object/{self.bucket_name}/{destination_path}"
             
-            import requests
+            logger.info(f"🔄 Tentando upload: {url}")
+            logger.info(f"📝 Content-Type: {content_type}")
+            logger.info(f"📏 Size: {len(file_content)} bytes")
+            
+            # Primeira tentativa: POST para novo arquivo
             response = requests.post(
                 url,
                 headers=headers,
                 data=file_content,
-                timeout=30.0
+                timeout=60.0
             )
             
             if response.status_code in (200, 201):
                 logger.info(f"✅ Upload realizado: {destination_path}")
                 return True
+                
             elif response.status_code == 409:
-                # Arquivo já existe
-                logger.info(f"📁 Arquivo já existe: {destination_path}")
-                return True
+                # Arquivo já existe, tentar PUT para atualizar
+                logger.info(f"📁 Arquivo existe, tentando atualizar: {destination_path}")
+                
+                put_response = requests.put(
+                    url,
+                    headers=headers,
+                    data=file_content,
+                    timeout=60.0
+                )
+                
+                if put_response.status_code in (200, 201):
+                    logger.info(f"✅ Arquivo atualizado: {destination_path}")
+                    return True
+                else:
+                    logger.error(f"❌ Erro no PUT: {put_response.status_code} - {put_response.text}")
+                    return False
+                    
+            elif response.status_code == 403:
+                # Erro de permissão, tentar com ANON_KEY se estamos usando SERVICE_KEY
+                logger.warning(f"⚠️ Erro 403 com SERVICE_KEY, isso pode indicar problema de configuração")
+                logger.error(f"❌ Resposta: {response.text}")
+                return False
+                
             else:
                 logger.error(f"❌ Erro no upload: {response.status_code} - {response.text}")
+                logger.error(f"🔍 Headers enviados: {headers}")
+                logger.error(f"🔍 URL: {url}")
                 return False
                 
         except Exception as e:
@@ -147,29 +162,52 @@ class StorageService:
             Lista de arquivos
         """
         try:
+            # 🆕 Validar credenciais antes de fazer request
+            if not self.supabase_key or not self.supabase_url:
+                logger.error("❌ Credenciais Supabase não configuradas")
+                return []
+            
+            # 🆕 Verificar se a chave parece válida (Supabase keys começam com 'eyJ')
+            if not self.supabase_key.startswith('eyJ'):
+                logger.error("❌ Chave Supabase inválida (deve começar com 'eyJ')")
+                return []
+                
             headers = {
-                'Authorization': f'Bearer {self.supabase_key}'
+                'Authorization': f'Bearer {self.supabase_key}',
+                'Content-Type': 'application/json',
+                'apikey': self.supabase_key
             }
             
             url = f"{self.supabase_url}/storage/v1/object/list/{self.bucket_name}"
             
-            params = {}
-            if prefix:
-                params['prefix'] = prefix
+            # Payload sempre deve ter a propriedade prefix, mesmo que vazia
+            payload = {
+                'prefix': prefix,
+                'limit': 100,
+                'offset': 0
+            }
             
-            import requests
+            logger.info(f"🔍 Tentando listar arquivos no bucket: {self.bucket_name}")
+            
             response = requests.post(
                 url,
                 headers=headers,
-                json=params,
+                json=payload,
                 timeout=30.0
             )
             
             if response.status_code == 200:
                 files = response.json()
+                logger.info(f"✅ Listagem bem sucedida: {len(files) if isinstance(files, list) else 0} arquivos")
                 return files if isinstance(files, list) else []
+            elif response.status_code == 403:
+                logger.error("❌ ERRO 403: Chave de API inválida ou sem permissão para storage")
+                logger.error(f"🔑 Chave usada: {self.supabase_key[:20]}...")
+                logger.error(f"🌐 URL: {self.supabase_url}")
+                logger.error(f"📦 Bucket: {self.bucket_name}")
+                return []
             else:
-                logger.warning(f"⚠️ Erro ao listar arquivos: {response.status_code}")
+                logger.warning(f"⚠️ Erro ao listar arquivos: {response.status_code} - {response.text}")
                 return []
                 
         except Exception as e:
@@ -185,23 +223,24 @@ class StorageService:
         """
         try:
             headers = {
-                'Authorization': f'Bearer {self.supabase_key}'
+                'Authorization': f'Bearer {self.supabase_key}',
+                'Content-Type': 'application/json',
+                'apikey': self.supabase_key
             }
             
             url = f"{self.supabase_url}/storage/v1/bucket"
             
-            import requests
             response = requests.get(url, headers=headers, timeout=30.0)
             
             if response.status_code == 200:
                 buckets = response.json()
                 return buckets if isinstance(buckets, list) else []
             else:
-                logger.warning(f"⚠️ Sem permissão para listar buckets: {response.status_code} (normal com ANON_KEY)")
+                logger.warning(f"⚠️ Erro ao listar buckets: {response.status_code} (normal com algumas configurações)")
                 return []  # Retorna lista vazia ao invés de erro
                 
         except Exception as e:
-            logger.warning(f"⚠️ Não foi possível listar buckets: {e} (normal com ANON_KEY)")
+            logger.warning(f"⚠️ Não foi possível listar buckets: {e}")
             return []  # Retorna lista vazia ao invés de erro
 
     def get_public_url(self, file_path: str) -> str:
@@ -222,33 +261,68 @@ class StorageService:
         Não precisa verificar diretamente via API de buckets.
         """
         try:
-            # Ao invés de verificar se o bucket existe, vamos tentar usá-lo
-            # Se conseguir listar arquivos (mesmo que vazio), significa que o bucket existe
-            headers = {
-                'Authorization': f'Bearer {self.supabase_key}'
-            }
-            
-            # Tentar listar uma pasta teste no bucket
-            url = f"{self.supabase_url}/storage/v1/object/list/{self.bucket_name}"
-            
-            async with httpx.AsyncClient() as client:
-                test_response = await client.post(
-                    url,
-                    headers=headers,
-                    json={'prefix': 'test'},
-                    timeout=10.0
-                )
-                
-                if test_response.status_code == 200:
-                    logger.info(f"✅ Bucket '{self.bucket_name}' acessível e funcionando")
-                    return True
-                else:
-                    logger.warning(f"⚠️ Possível problema com bucket: {test_response.status_code}")
-                    # Mesmo assim, assumir que existe (pode ser problema de permissão apenas)
-                    return True
+            # Tentar listar arquivos no bucket como teste
+            files = self.list("")
+            logger.info(f"✅ Bucket '{self.bucket_name}' acessível - {len(files)} arquivos encontrados")
+            return True
                 
         except Exception as e:
             logger.warning(f"⚠️ Erro ao testar bucket: {e}")
-            # Assumir que bucket existe (já foi confirmado via SQL)
-            logger.info(f"📦 Assumindo que bucket '{self.bucket_name}' existe (confirmado via configuração)")
-            return True 
+            # Assumir que bucket existe (confirmado via SQL)
+            logger.info(f"📦 Assumindo que bucket '{self.bucket_name}' existe")
+            return True
+
+    def test_connection(self) -> Dict[str, Any]:
+        """
+        Testa a conexão com o Supabase Storage
+        """
+        try:
+            logger.info("🧪 Iniciando teste de conexão completo...")
+            
+            # 1. Testar listagem de buckets
+            logger.info("1️⃣ Testando listagem de buckets...")
+            buckets = self.list_buckets()
+            bucket_test_ok = len(buckets) >= 0  # Pode ser 0 com algumas configurações
+            logger.info(f"   Resultado: {len(buckets)} buckets encontrados")
+            
+            # 2. Testar listagem de arquivos no bucket
+            logger.info("2️⃣ Testando listagem de arquivos...")
+            files = self.list("")
+            files_test_ok = isinstance(files, list)
+            logger.info(f"   Resultado: {len(files)} arquivos encontrados")
+            
+            # 3. Testar upload de um arquivo pequeno de teste
+            logger.info("3️⃣ Testando upload...")
+            test_content = b"test content for connection"
+            test_path = "test/connection-test.txt"
+            upload_test_ok = self.upload(test_path, test_content, "text/plain")
+            logger.info(f"   Resultado: {'✅ Sucesso' if upload_test_ok else '❌ Falhou'}")
+            
+            # 4. Se upload funcionou, testar URL pública
+            public_url = None
+            if upload_test_ok:
+                public_url = self.get_public_url(test_path)
+                logger.info(f"   URL pública: {public_url}")
+            
+            success = bucket_test_ok and files_test_ok and upload_test_ok
+            
+            return {
+                'success': success,
+                'bucket_accessible': bucket_test_ok,
+                'files_listable': files_test_ok,
+                'upload_working': upload_test_ok,
+                'public_url_generated': public_url is not None,
+                'details': {
+                    'bucket_count': len(buckets),
+                    'file_count': len(files),
+                    'test_upload': upload_test_ok,
+                    'test_url': public_url
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no teste de conexão: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            } 

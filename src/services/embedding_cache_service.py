@@ -5,165 +5,323 @@ import logging
 import redis
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from config.database import db_manager
-
+from config.redis_config import RedisConfig
 
 logger = logging.getLogger(__name__)
 
-
-#criar uma classe para o cache de embeddings
-
 class EmbeddingCacheService:
-    """Cache inteligente para embeddings com PostgreSQL + Redis"""
+    """Cache de embeddings usando APENAS Redis local (simplificado para matching)"""
     
-    def __init__(self, db_manager, redis_host: str = "localhost"):
+    def __init__(self, db_manager=None, **kwargs):
+        """
+        Inicializa EmbeddingCacheService usando APENAS Redis local
+        db_manager mantido para compatibilidade mas não usado para cache
+        """
         self.db_manager = db_manager
         
-        # Redis para cache rápido (opcional)
-        try:
-            self.redis_client = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=False)
-            self.redis_client.ping()
-            self.redis_available = True
-            logger.info("✅ Redis cache ativo")
-        except:
-            self.redis_available = False
-            logger.warning("⚠️ Redis não disponível, usando apenas PostgreSQL")
+        # 🔧 NOVA CONFIGURAÇÃO: Redis LOCAL prioritário
+        logger.info("🔄 Inicializando Redis LOCAL para cache de embeddings...")
+        self.redis_client = self._get_local_redis_client()
+        self.redis_available = self.redis_client is not None
         
-        self._create_cache_tables()
+        if self.redis_available:
+            logger.info("✅ Redis LOCAL ativo para matching")
+            # Configurar TTL padrão para embeddings (24h)
+            self.default_ttl = 86400
+        else:
+            logger.warning("⚠️ Redis LOCAL não disponível - matching sem cache")
+            logger.warning("💡 Para ativar cache: docker run -d -p 6379:6379 redis:alpine")
     
-    def _create_cache_tables(self):
-        """Criar tabelas de cache se não existirem"""
-        with self.db_manager.get_connection() as conn:
-            with conn.cursor() as cursor:
-                # Tabela para cache de embeddings
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS embedding_cache (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        text_hash VARCHAR(64) UNIQUE NOT NULL,
-                        text_preview TEXT,
-                        embedding VECTOR(768), -- NeralMind BERT português (768 dimensões)
-                        model_name VARCHAR(100),
-                        created_at TIMESTAMPTZ DEFAULT NOW(),
-                        accessed_at TIMESTAMPTZ DEFAULT NOW(),
-                        access_count INTEGER DEFAULT 1
-                    );
-                    
-                    CREATE INDEX IF NOT EXISTS idx_embedding_cache_hash 
-                    ON embedding_cache (text_hash);
-                    
-                    CREATE INDEX IF NOT EXISTS idx_embedding_cache_model 
-                    ON embedding_cache (model_name);
-                """)
-                
-                # Tabela para controle de processamento
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS processamento_cache (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        resource_type VARCHAR(50) NOT NULL, -- 'licitacao', 'documento'
-                        resource_id VARCHAR(255) NOT NULL,
-                        process_hash VARCHAR(64) NOT NULL,
-                        status VARCHAR(20) DEFAULT 'completed',
-                        metadata JSONB,
-                        created_at TIMESTAMPTZ DEFAULT NOW(),
-                        
-                        UNIQUE(resource_type, resource_id, process_hash)
-                    );
-                    
-                    CREATE INDEX IF NOT EXISTS idx_processamento_cache_resource 
-                    ON processamento_cache (resource_type, resource_id);
-                """)
-                
-                conn.commit()
-                logger.info("✅ Tabelas de cache criadas/verificadas")
+    def _get_local_redis_client(self):
+        """Conecta especificamente ao Redis local, ignorando Railway/produção"""
+        try:
+            # 🎯 PRIORIZAR Redis local para desenvolvimento/matching
+            logger.info("🔗 Conectando ao Redis LOCAL: localhost:6379")
+            
+            client = redis.Redis(
+                host='localhost',
+                port=6379,
+                password=None,  # Redis local sem senha
+                db=0,
+                decode_responses=False,  # Para pickle
+                socket_connect_timeout=2,  # Timeout rápido
+                socket_timeout=2,
+                retry_on_timeout=False
+            )
+            
+            # Testar conexão
+            client.ping()
+            logger.info("✅ Redis LOCAL conectado com sucesso!")
+            
+            # Mostrar estatísticas básicas
+            info = client.info()
+            memory_used = info.get('used_memory_human', 'N/A')
+            total_keys = info.get('db0', {}).get('keys', 0)
+            logger.info(f"📊 Redis Stats: {total_keys} keys, {memory_used} memory")
+            
+            return client
+            
+        except redis.ConnectionError as e:
+            logger.warning(f"⚠️ Redis LOCAL não conectou: {e}")
+            logger.info("💡 Para usar cache, inicie Redis local:")
+            logger.info("   🐳 Docker: docker run -d -p 6379:6379 redis:alpine")
+            logger.info("   🍺 Homebrew: brew install redis && redis-server")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Erro ao conectar Redis LOCAL: {e}")
+            return None
     
     def get_embedding_from_cache(self, text: str, model_name: str = "sentence-transformers") -> Optional[List[float]]:
-        """Busca embedding no cache (PostgreSQL + Redis)"""
-        text_hash = self._hash_text(text)
-        
-        # 1. Tentar Redis primeiro (mais rápido)
-        if self.redis_available:
-            try:
-                redis_key = f"emb:{model_name}:{text_hash}"
-                cached = self.redis_client.get(redis_key)
-                if cached:
-                    embedding = pickle.loads(cached)
-                    logger.debug("⚡ Embedding encontrado no Redis")
-                    return embedding
-            except Exception as e:
-                logger.warning(f"Erro no Redis: {e}")
-        
-        # 2. Buscar no PostgreSQL
+        """Busca embedding no Redis LOCAL"""
+        if not self.redis_available:
+            return None
+            
         try:
-            with self.db_manager.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT embedding FROM embedding_cache 
-                        WHERE text_hash = %s AND model_name = %s
-                    """, (text_hash, model_name))
+            text_hash = self._hash_text(text)
+            redis_key = f"match:{model_name}:{text_hash}"
+            
+            cached = self.redis_client.get(redis_key)
+            if cached:
+                data = pickle.loads(cached)
+                
+                # Verificar integridade e atualizar estatísticas
+                if data.get('text_hash') == text_hash:
+                    # Incrementar contador de acesso
+                    access_key = f"stats:{redis_key}"
+                    self.redis_client.incr(access_key)
+                    self.redis_client.expire(access_key, self.default_ttl)
                     
-                    result = cursor.fetchone()
-                    if result:
-                        embedding = result[0]  # PostgreSQL retorna lista diretamente
-                        
-                        # Atualizar estatísticas de acesso
-                        cursor.execute("""
-                            UPDATE embedding_cache 
-                            SET accessed_at = NOW(), access_count = access_count + 1
-                            WHERE text_hash = %s AND model_name = %s
-                        """, (text_hash, model_name))
-                        conn.commit()
-                        
-                        # Cache no Redis para próximas consultas
-                        if self.redis_available:
-                            try:
-                                redis_key = f"emb:{model_name}:{text_hash}"
-                                self.redis_client.setex(redis_key, 86400, pickle.dumps(embedding))  # 24h
-                            except:
-                                pass
-                        
-                        logger.debug("✅ Embedding encontrado no PostgreSQL")
-                        return embedding
+                    logger.debug("⚡ Embedding encontrado no Redis LOCAL")
+                    return data['embedding']
             
             return None
             
         except Exception as e:
-            logger.error(f"❌ Erro ao buscar embedding: {e}")
+            logger.error(f"❌ Erro ao buscar embedding no Redis: {e}")
             return None
     
     def save_embedding_to_cache(self, text: str, embedding: List[float], model_name: str = "sentence-transformers") -> bool:
-        """Salva embedding no cache"""
+        """Salva embedding no Redis LOCAL"""
+        if not self.redis_available:
+            return False
+            
         try:
             text_hash = self._hash_text(text)
-            text_preview = text[:100] + "..." if len(text) > 100 else text
+            redis_key = f"match:{model_name}:{text_hash}"
             
-            # Salvar no PostgreSQL
-            with self.db_manager.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("""
-                        INSERT INTO embedding_cache (text_hash, text_preview, embedding, model_name)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (text_hash) DO UPDATE SET
-                            accessed_at = NOW(),
-                            access_count = embedding_cache.access_count + 1
-                    """, (text_hash, text_preview, embedding, model_name))
-                    conn.commit()
+            # Preparar dados para cache
+            data = {
+                'embedding': embedding,
+                'text_hash': text_hash,
+                'text_preview': text[:100] + "..." if len(text) > 100 else text,
+                'model_name': model_name,
+                'cached_at': datetime.now().isoformat(),
+                'dimensions': len(embedding) if embedding else 0
+            }
             
-            # Cache no Redis
-            if self.redis_available:
-                try:
-                    redis_key = f"emb:{model_name}:{text_hash}"
-                    self.redis_client.setex(redis_key, 86400, pickle.dumps(embedding))
-                except:
-                    pass
+            # Salvar no Redis com TTL
+            serialized = pickle.dumps(data)
+            success = self.redis_client.setex(redis_key, self.default_ttl, serialized)
             
+            if success:
+                # Inicializar contador de acesso
+                access_key = f"stats:{redis_key}"
+                self.redis_client.setex(access_key, self.default_ttl, 1)
+                
+                logger.debug(f"💾 Embedding salvo no Redis LOCAL: {len(embedding)} dim")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao salvar embedding no Redis: {e}")
+            return False
+    
+    def batch_get_embeddings_from_cache(self, texts: List[str], model_name: str = "sentence-transformers") -> Dict[str, List[float]]:
+        """Busca múltiplos embeddings em lote (otimizado para Redis)"""
+        if not self.redis_available or not texts:
+            return {}
+        
+        try:
+            # Preparar chaves
+            text_to_key = {}
+            keys_to_fetch = []
+            
+            for text in texts:
+                text_hash = self._hash_text(text)
+                redis_key = f"match:{model_name}:{text_hash}"
+                text_to_key[text] = redis_key
+                keys_to_fetch.append(redis_key)
+            
+            # Buscar todos de uma vez usando pipeline
+            pipe = self.redis_client.pipeline()
+            for key in keys_to_fetch:
+                pipe.get(key)
+            
+            results = pipe.execute()
+            
+            # Processar resultados
+            cached_embeddings = {}
+            for i, (text, key) in enumerate(text_to_key.items()):
+                cached_data = results[i]
+                if cached_data:
+                    try:
+                        data = pickle.loads(cached_data)
+                        if data.get('text_hash') == self._hash_text(text):
+                            cached_embeddings[text] = data['embedding']
+                            
+                            # Incrementar contador de acesso
+                            access_key = f"stats:{key}"
+                            self.redis_client.incr(access_key)
+                            self.redis_client.expire(access_key, self.default_ttl)
+                    except:
+                        continue
+            
+            if cached_embeddings:
+                logger.info(f"⚡ {len(cached_embeddings)}/{len(texts)} embeddings encontrados no cache Redis")
+            
+            return cached_embeddings
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar embeddings em lote: {e}")
+            return {}
+    
+    def batch_save_embeddings_to_cache(self, texts_and_embeddings: List[tuple], model_name: str = "sentence-transformers") -> bool:
+        """Salva múltiplos embeddings em lote (otimizado para Redis)"""
+        if not self.redis_available or not texts_and_embeddings:
+            return False
+        
+        try:
+            # Usar pipeline para operações em lote
+            pipe = self.redis_client.pipeline()
+            saved_count = 0
+            
+            for text, embedding in texts_and_embeddings:
+                if not embedding:
+                    continue
+                    
+                text_hash = self._hash_text(text)
+                redis_key = f"match:{model_name}:{text_hash}"
+                
+                # Preparar dados
+                data = {
+                    'embedding': embedding,
+                    'text_hash': text_hash,
+                    'text_preview': text[:100] + "..." if len(text) > 100 else text,
+                    'model_name': model_name,
+                    'cached_at': datetime.now().isoformat(),
+                    'dimensions': len(embedding)
+                }
+                
+                # Adicionar ao pipeline
+                serialized = pickle.dumps(data)
+                pipe.setex(redis_key, self.default_ttl, serialized)
+                
+                # Inicializar contador de acesso
+                access_key = f"stats:{redis_key}"
+                pipe.setex(access_key, self.default_ttl, 1)
+                
+                saved_count += 1
+            
+            # Executar pipeline
+            pipe.execute()
+            
+            logger.info(f"💾 {saved_count} embeddings salvos no Redis LOCAL em lote")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erro ao salvar embedding: {e}")
+            logger.error(f"❌ Erro ao salvar embeddings em lote: {e}")
             return False
     
+    def clear_cache(self, pattern: str = "match:*") -> int:
+        """Limpa cache por padrão"""
+        if not self.redis_available:
+            return 0
+        
+        try:
+            keys = self.redis_client.keys(pattern)
+            if keys:
+                deleted = self.redis_client.delete(*keys)
+                logger.info(f"🗑️ {deleted} chaves removidas do cache")
+                return deleted
+            return 0
+        except Exception as e:
+            logger.error(f"❌ Erro ao limpar cache: {e}")
+            return 0
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Estatísticas do cache Redis LOCAL"""
+        if not self.redis_available:
+            return {
+                'status': 'disabled',
+                'message': 'Redis LOCAL não disponível'
+            }
+        
+        try:
+            # Info básico do Redis
+            info = self.redis_client.info()
+            
+            # Contar chaves por tipo
+            match_keys = self.redis_client.keys("match:*")
+            stats_keys = self.redis_client.keys("stats:*")
+            
+            # Calcular estatísticas de acesso
+            total_accesses = 0
+            if stats_keys:
+                pipe = self.redis_client.pipeline()
+                for key in stats_keys:
+                    pipe.get(key)
+                access_counts = pipe.execute()
+                total_accesses = sum(int(count) if count else 0 for count in access_counts)
+            
+            # Análise por modelo
+            models_stats = {}
+            for key in match_keys:
+                try:
+                    key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+                    parts = key_str.split(':')
+                    if len(parts) >= 2:
+                        model = parts[1]
+                        if model not in models_stats:
+                            models_stats[model] = 0
+                        models_stats[model] += 1
+                except:
+                    continue
+            
+            return {
+                'status': 'active',
+                'redis_info': {
+                    'version': info.get('redis_version', 'N/A'),
+                    'memory_used': info.get('used_memory_human', 'N/A'),
+                    'connected_clients': info.get('connected_clients', 0),
+                    'total_keys': info.get('db0', {}).get('keys', 0)
+                },
+                'cache_stats': {
+                    'match_keys': len(match_keys),
+                    'total_accesses': total_accesses,
+                    'avg_accesses': round(total_accesses / len(match_keys), 2) if match_keys else 0,
+                    'models': models_stats
+                },
+                'performance': {
+                    'hit_rate_estimate': f"{min(95, (total_accesses / len(match_keys)) * 10) if match_keys else 0:.1f}%",
+                    'cache_efficiency': 'High' if len(match_keys) > 100 else 'Medium' if len(match_keys) > 10 else 'Low'
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao obter stats do cache: {e}")
+            return {'status': 'error', 'error': str(e)}
+    
+    def _hash_text(self, text: str) -> str:
+        """Gera hash SHA-256 do texto"""
+        return hashlib.sha256(text.encode('utf-8')).hexdigest()
+    
+    # Métodos para compatibilidade com deduplicação (delegam para DB se necessário)
     def is_resource_processed(self, resource_type: str, resource_id: str, process_data: Dict[str, Any]) -> bool:
-        """Verifica se recurso já foi processado com estes parâmetros"""
+        """Verifica se recurso foi processado (mantém lógica DB para deduplicação)"""
+        if not self.db_manager:
+            return False
+            
         try:
             process_hash = self._hash_process_data(process_data)
             
@@ -183,7 +341,10 @@ class EmbeddingCacheService:
             return False
     
     def mark_resource_processed(self, resource_type: str, resource_id: str, process_data: Dict[str, Any]) -> bool:
-        """Marca recurso como processado"""
+        """Marca recurso como processado (mantém lógica DB para deduplicação)"""
+        if not self.db_manager:
+            return False
+            
         try:
             import json
             process_hash = self._hash_process_data(process_data)
@@ -203,56 +364,8 @@ class EmbeddingCacheService:
             logger.error(f"❌ Erro ao marcar processamento: {e}")
             return False
     
-    def _hash_text(self, text: str) -> str:
-        """Gera hash SHA-256 do texto"""
-        return hashlib.sha256(text.encode('utf-8')).hexdigest()
-    
     def _hash_process_data(self, data: Dict[str, Any]) -> str:
         """Gera hash dos dados de processamento"""
-        # Ordenar chaves para hash consistente
         sorted_data = {k: data[k] for k in sorted(data.keys())}
         data_str = str(sorted_data)
         return hashlib.sha256(data_str.encode('utf-8')).hexdigest()
-    
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """Estatísticas do cache"""
-        try:
-            with self.db_manager.get_connection() as conn:
-                with conn.cursor() as cursor:
-                    # Stats embeddings
-                    cursor.execute("""
-                        SELECT 
-                            model_name,
-                            COUNT(*) as total_embeddings,
-                            SUM(access_count) as total_accesses,
-                            AVG(access_count) as avg_accesses
-                        FROM embedding_cache 
-                        GROUP BY model_name
-                    """)
-                    embedding_stats = cursor.fetchall()
-                    
-                    # Stats processamento
-                    cursor.execute("""
-                        SELECT 
-                            resource_type,
-                            COUNT(*) as total_processed
-                        FROM processamento_cache 
-                        GROUP BY resource_type
-                    """)
-                    processing_stats = cursor.fetchall()
-                    
-                    return {
-                        'embedding_stats': {
-                            row[0]: {
-                                'total_embeddings': row[1],
-                                'total_accesses': row[2],
-                                'avg_accesses': float(row[3])
-                            } for row in embedding_stats
-                        },
-                        'processing_stats': {row[0]: row[1] for row in processing_stats},
-                        'redis_available': self.redis_available
-                    }
-                    
-        except Exception as e:
-            logger.error(f"❌ Erro ao obter stats: {e}")
-            return {'error': str(e)}

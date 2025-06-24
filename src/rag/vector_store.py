@@ -136,11 +136,11 @@ class VectorStore:
                             chunk = {
                                 'id': str(row[0]),
                                 'text': row[1],
-                                'metadata': row[2] or {},
-                                'similarity_score': float(row[3]),
-                                'text_score': float(row[4]),
-                                'hybrid_score': float(row[5]),
-                                'final_score': float(row[5])  # Para compatibilidade
+                                'similarity_score': float(row[2]),
+                                'text_score': float(row[3]),
+                                'hybrid_score': float(row[4]),
+                                'metadata': row[5] or {},
+                                'final_score': float(row[4])  # Para compatibilidade
                             }
                             chunks.append(chunk)
                         

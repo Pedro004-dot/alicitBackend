@@ -274,12 +274,15 @@ class SystemService:
                     
                     # Importar engine real
                     from matching import process_daily_bids
-                    from matching.vectorizers import HybridTextVectorizer
+                    from matching.vectorizers import BrazilianTextVectorizer
                     
-                    # Criar vetorizador baseado na configuração
-                    vectorizer_type = os.getenv('VECTORIZER_TYPE', 'hybrid')
+                    # Criar vetorizador baseado na configuração (PRIORIDADE SISTEMA BRASILEIRO)
+                    vectorizer_type = os.getenv('VECTORIZER_TYPE', 'brazilian')
                     
-                    if vectorizer_type == 'hybrid':
+                    if vectorizer_type == 'brazilian':
+                        from matching.vectorizers import BrazilianTextVectorizer
+                        vectorizer = BrazilianTextVectorizer()
+                    elif vectorizer_type == 'hybrid':
                         from matching.vectorizers import HybridTextVectorizer
                         vectorizer = HybridTextVectorizer()
                     elif vectorizer_type == 'openai':
@@ -289,11 +292,12 @@ class SystemService:
                         from matching.vectorizers import VoyageAITextVectorizer
                         vectorizer = VoyageAITextVectorizer()
                     else:
-                        from matching.vectorizers import MockTextVectorizer
-                        vectorizer = MockTextVectorizer()
+                        from matching.vectorizers import BrazilianTextVectorizer
+                        vectorizer = BrazilianTextVectorizer()  # Fallback brasileiro
                     
-                    # Executar busca real
-                    process_daily_bids(vectorizer)
+                    # Executar busca real COM VALIDAÇÃO LLM
+                    enable_llm = os.getenv('ENABLE_LLM_VALIDATION', 'true').lower() == 'true'
+                    process_daily_bids(vectorizer, enable_llm_validation=enable_llm)
                     
                     # Atualizar status
                     self.process_status['daily_bids']['message'] = 'Busca de novas licitações concluída com sucesso!'
@@ -350,12 +354,15 @@ class SystemService:
                     
                     # Importar engine real
                     from matching import reevaluate_existing_bids
-                    from matching.vectorizers import HybridTextVectorizer
+                    from matching.vectorizers import BrazilianTextVectorizer
                     
-                    # Criar vetorizador baseado na configuração
-                    vectorizer_type = os.getenv('VECTORIZER_TYPE', 'hybrid')
+                    # Criar vetorizador baseado na configuração (PRIORIDADE SISTEMA BRASILEIRO)
+                    vectorizer_type = os.getenv('VECTORIZER_TYPE', 'brazilian')
                     
-                    if vectorizer_type == 'hybrid':
+                    if vectorizer_type == 'brazilian':
+                        from matching.vectorizers import BrazilianTextVectorizer
+                        vectorizer = BrazilianTextVectorizer()
+                    elif vectorizer_type == 'hybrid':
                         from matching.vectorizers import HybridTextVectorizer
                         vectorizer = HybridTextVectorizer()
                     elif vectorizer_type == 'openai':
@@ -365,14 +372,15 @@ class SystemService:
                         from matching.vectorizers import VoyageAITextVectorizer
                         vectorizer = VoyageAITextVectorizer()
                     else:
-                        from matching.vectorizers import MockTextVectorizer
-                        vectorizer = MockTextVectorizer()
+                        from matching.vectorizers import BrazilianTextVectorizer
+                        vectorizer = BrazilianTextVectorizer()  # Fallback brasileiro
                     
                     # Configurar limpeza de matches (padrão: sim)
                     clear_matches = os.getenv('CLEAR_MATCHES_BEFORE_REEVALUATE', 'true').lower() == 'true'
                     
-                    # Executar reavaliação real
-                    result = reevaluate_existing_bids(vectorizer, clear_matches=clear_matches)
+                    # Executar reavaliação real COM VALIDAÇÃO LLM
+                    enable_llm = os.getenv('ENABLE_LLM_VALIDATION', 'true').lower() == 'true'
+                    result = reevaluate_existing_bids(vectorizer, clear_matches=clear_matches, enable_llm_validation=enable_llm)
                     
                     # Atualizar status com resultado
                     if result and result.get('success', False):

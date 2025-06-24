@@ -20,6 +20,7 @@ import io
 from datetime import datetime
 from supabase import create_client, Client
 from services.storage_service import StorageService
+from rag.advanced_text_extractor import AdvancedTextExtractor
 
 # Configurar logging
 logger = logging.getLogger(__name__)
@@ -40,6 +41,10 @@ class UnifiedDocumentProcessor:
         
         # Extensões aceitas
         self.allowed_extensions = {'.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt', '.zip'}
+        
+        # 🆕 Inicializar extrator avançado de texto
+        self.text_extractor = AdvancedTextExtractor()
+        logger.info(f"🔧 Extrator de texto inicializado: {self.text_extractor.get_extractor_status()}")
         
         # Garantir bucket
         self._ensure_bucket_exists()
@@ -528,10 +533,33 @@ class UnifiedDocumentProcessor:
                 
                 logger.info(f"📎 URL gerada: {public_url}")
                 
-                # Extrair texto se for PDF
+                # 🆕 NOVO: Extrair texto usando extrator avançado
                 texto_preview = None
+                extraction_result = None
                 if extensao == '.pdf':
-                    texto_preview = self._extrair_texto_pdf(arquivo_content)
+                    try:
+                        logger.info(f"🔄 Extraindo texto avançado: {nome_original}")
+                        extraction_result = self.text_extractor.extract_text_from_bytes(
+                            arquivo_content, 
+                            nome_original
+                        )
+                        
+                        if extraction_result['success']:
+                            # Para preview, pegar só os primeiros 1000 caracteres
+                            texto_preview = extraction_result['text'][:1000]
+                            if len(extraction_result['text']) > 1000:
+                                texto_preview += "..."
+                            
+                            logger.info(f"✅ Texto extraído com {extraction_result['extractor_used']} em {extraction_result['extraction_time']:.2f}s")
+                        else:
+                            logger.warning(f"⚠️ Falha na extração: {extraction_result.get('error', 'Erro desconhecido')}")
+                            # Fallback para método antigo se novo falhar
+                            texto_preview = self._extrair_texto_pdf_fallback(arquivo_content)
+                    
+                    except Exception as e:
+                        logger.error(f"❌ Erro no extrator avançado: {e}")
+                        # Fallback para método antigo
+                        texto_preview = self._extrair_texto_pdf_fallback(arquivo_content)
                 
                 # Montar documento
                 documento = {
@@ -552,6 +580,15 @@ class UnifiedDocumentProcessor:
                         'bucket_name': self.bucket_name,
                         'processado_em': datetime.now().isoformat(),
                         'is_extracted_from_zip': metadata_extra is not None,
+                        # 🆕 Metadados da extração de texto
+                        'text_extraction': {
+                            'extractor_used': extraction_result['extractor_used'] if extraction_result and extraction_result['success'] else None,
+                            'extraction_time': extraction_result['extraction_time'] if extraction_result else None,
+                            'char_count': extraction_result['char_count'] if extraction_result and extraction_result['success'] else None,
+                            'page_count': extraction_result['page_count'] if extraction_result and extraction_result['success'] else None,
+                            'success': extraction_result['success'] if extraction_result else False,
+                            'extraction_metadata': extraction_result.get('metadata', {}) if extraction_result and extraction_result['success'] else {}
+                        },
                         **(metadata_extra or {})
                     }
                 }
@@ -571,11 +608,24 @@ class UnifiedDocumentProcessor:
     # ================================
     
     def _limpar_nome_arquivo(self, nome: str) -> str:
-        """Remove caracteres problemáticos"""
+        """Remove caracteres problemáticos e acentos"""
         import re
-        nome_limpo = re.sub(r'[^\w\-_\.]', '_', nome)
+        import unicodedata
+        
+        # 🔧 CORREÇÃO: Remover acentos convertendo para ASCII
+        nome_limpo = unicodedata.normalize('NFKD', nome)
+        nome_limpo = ''.join(c for c in nome_limpo if not unicodedata.combining(c))
+        
+        # Remover espaços e caracteres especiais, manter apenas letras, números, hífen, underscore e ponto
+        nome_limpo = re.sub(r'[^\w\-_\.]', '_', nome_limpo)
+        
+        # Remover underscores múltiplos
         nome_limpo = re.sub(r'_+', '_', nome_limpo)
-        return nome_limpo.strip('_')
+        
+        # Remover underscores no início e fim
+        nome_limpo = nome_limpo.strip('_')
+        
+        return nome_limpo
     
     def _detectar_extensao(self, content: bytes, nome: str) -> str:
         """Detecta extensão correta do arquivo"""
@@ -631,9 +681,10 @@ class UnifiedDocumentProcessor:
         }
         return mime_types.get(extensao, 'application/octet-stream')
     
-    def _extrair_texto_pdf(self, pdf_content: bytes, max_chars: int = 500) -> Optional[str]:
-        """Extrai preview do texto de um PDF"""
+    def _extrair_texto_pdf_fallback(self, pdf_content: bytes, max_chars: int = 1000) -> Optional[str]:
+        """Extrai preview do texto de um PDF usando PyPDF2 (método fallback)"""
         try:
+            logger.info(f"🔄 Usando fallback PyPDF2 para extração")
             pdf_file = io.BytesIO(pdf_content)
             reader = PyPDF2.PdfReader(pdf_file)
             text = ""
@@ -643,10 +694,13 @@ class UnifiedDocumentProcessor:
                 if len(text) > max_chars:
                     break
             
-            return text[:max_chars].strip() if text.strip() else None
+            preview = text[:max_chars].strip() if text.strip() else None
+            if preview:
+                logger.info(f"✅ Fallback PyPDF2 extraiu {len(preview)} caracteres")
+            return preview
             
         except Exception as e:
-            logger.debug(f"⚠️ Erro ao extrair texto PDF: {e}")
+            logger.debug(f"⚠️ Erro no fallback PyPDF2: {e}")
             return None
     
     # ================================
@@ -1417,4 +1471,129 @@ class UnifiedDocumentProcessor:
         ano = licitacao['ano_compra']
         sequencial = licitacao['sequencial_compra']
         
-        return f"https://pncp.gov.br/pncp-api/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/arquivos" 
+        return f"https://pncp.gov.br/pncp-api/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/arquivos"
+    
+    def testar_extrator_texto(self, licitacao_id: str = None) -> Dict[str, Any]:
+        """
+        🧪 NOVA FUNÇÃO: Testa o extrator de texto avançado em documentos existentes
+        """
+        try:
+            logger.info("🧪 Testando extrator de texto avançado...")
+            
+            # Obter status do extrator
+            extractor_status = self.text_extractor.get_extractor_status()
+            logger.info(f"📊 Status do extrator: {extractor_status}")
+            
+            # Buscar documentos para teste
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor(cursor_factory=DictCursor) as cursor:
+                    if licitacao_id:
+                        query = """
+                            SELECT id, licitacao_id, titulo, arquivo_nuvem_url, 
+                                   tamanho_arquivo, metadata_arquivo
+                            FROM documentos_licitacao 
+                            WHERE licitacao_id = %s AND tipo_arquivo = 'application/pdf'
+                            LIMIT 3
+                        """
+                        cursor.execute(query, (licitacao_id,))
+                    else:
+                        query = """
+                            SELECT id, licitacao_id, titulo, arquivo_nuvem_url, 
+                                   tamanho_arquivo, metadata_arquivo
+                            FROM documentos_licitacao 
+                            WHERE tipo_arquivo = 'application/pdf'
+                            ORDER BY created_at DESC
+                            LIMIT 3
+                        """
+                        cursor.execute(query)
+                    
+                    documentos = cursor.fetchall()
+            
+            if not documentos:
+                return {
+                    'success': False,
+                    'error': 'Nenhum documento PDF encontrado para teste',
+                    'extractor_status': extractor_status
+                }
+            
+            logger.info(f"📄 Testando {len(documentos)} documentos...")
+            
+            resultados = []
+            
+            for doc in documentos:
+                try:
+                    logger.info(f"🔄 Testando: {doc['titulo']}")
+                    
+                    # Baixar arquivo
+                    response = requests.get(doc['arquivo_nuvem_url'], timeout=60)
+                    response.raise_for_status()
+                    pdf_content = response.content
+                    
+                    logger.info(f"📥 Arquivo baixado: {len(pdf_content)} bytes")
+                    
+                    # Testar extração
+                    extraction_result = self.text_extractor.extract_text_from_bytes(
+                        pdf_content, 
+                        doc['titulo']
+                    )
+                    
+                    # Compilar resultado do teste
+                    teste_resultado = {
+                        'documento_id': doc['id'],
+                        'titulo': doc['titulo'],
+                        'arquivo_url': doc['arquivo_nuvem_url'],
+                        'tamanho_original': doc['tamanho_arquivo'],
+                        'tamanho_baixado': len(pdf_content),
+                        'extraction_result': extraction_result
+                    }
+                    
+                    if extraction_result['success']:
+                        logger.info(f"✅ Sucesso: {extraction_result['extractor_used']} - {extraction_result['char_count']} chars")
+                    else:
+                        logger.error(f"❌ Falha: {extraction_result.get('error', 'Erro desconhecido')}")
+                    
+                    resultados.append(teste_resultado)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Erro ao testar documento {doc['titulo']}: {e}")
+                    resultados.append({
+                        'documento_id': doc['id'],
+                        'titulo': doc['titulo'],
+                        'error': str(e),
+                        'extraction_result': {'success': False, 'error': str(e)}
+                    })
+            
+            # Compilar estatísticas
+            sucessos = sum(1 for r in resultados if r['extraction_result']['success'])
+            total = len(resultados)
+            
+            estatisticas = {
+                'total_testado': total,
+                'sucessos': sucessos,
+                'falhas': total - sucessos,
+                'taxa_sucesso': (sucessos / total * 100) if total > 0 else 0,
+                'extractors_usados': {}
+            }
+            
+            # Contar uso de extractors
+            for resultado in resultados:
+                if resultado['extraction_result']['success']:
+                    extractor = resultado['extraction_result']['extractor_used']
+                    estatisticas['extractors_usados'][extractor] = estatisticas['extractors_usados'].get(extractor, 0) + 1
+            
+            logger.info(f"🎉 Teste concluído: {sucessos}/{total} sucessos ({estatisticas['taxa_sucesso']:.1f}%)")
+            
+            return {
+                'success': True,
+                'extractor_status': extractor_status,
+                'estatisticas': estatisticas,
+                'resultados_detalhados': resultados
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no teste do extrator: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'extractor_status': self.text_extractor.get_extractor_status() if hasattr(self, 'text_extractor') else {}
+            } 

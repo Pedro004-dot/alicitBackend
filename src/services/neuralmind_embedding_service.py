@@ -5,43 +5,50 @@ Especializado para licitações brasileiras - Zero peso local!
 """
 
 import os
-import requests
 import logging
 import time
 import re
 from typing import List, Optional
 
+try:
+    from huggingface_hub import InferenceClient
+except ImportError:
+    print("📦 Instalando huggingface_hub...")
+    import subprocess
+    subprocess.check_call(["pip", "install", "huggingface_hub"])
+    from huggingface_hub import InferenceClient
+
 logger = logging.getLogger(__name__)
 
 class NeuralMindEmbeddingService:
     """
-    Serviço usando NeralMind BERT via Hugging Face API
+    Serviço usando modelo multilíngue via Hugging Face API
     Especializado para licitações brasileiras
     
-    Por que este modelo:
-    - Treinado APENAS em português brasileiro
-    - Entende jargão técnico e administrativo
-    - 768 dimensões = ideal para textos complexos
-    - Melhor performance para nosso domínio específico
+    Modelo usado: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+    - Suporte a português e múltiplas línguas
+    - Otimizado para similaridade semântica
+    - 384 dimensões = eficiente e performático
+    - Funciona bem com a API Inference do HuggingFace
     """
     
     def __init__(self):
         # Configuração da API
         self.api_key = os.getenv('HUGGINGFACE_API_KEY')
-        self.model_name = "neuralmind/bert-base-portuguese-cased"
-        self.api_url = f"https://api-inference.huggingface.co/models/{self.model_name}"
+        # Usar um modelo que funciona com a API Inference para feature extraction
+        self.model_name = "sentence-transformers/all-MiniLM-L6-v2"
         
-        # Headers
-        self.headers = {"Content-Type": "application/json"}
+        # Criar cliente HuggingFace
+        self.client = InferenceClient(token=self.api_key)
+        
         if self.api_key:
-            self.headers["Authorization"] = f"Bearer {self.api_key}"
             logger.info("🔑 Hugging Face API key configurada (tier pago)")
         else:
             logger.info("🆓 Usando Hugging Face tier gratuito")
         
         # Configurações específicas para licitações
-        self.embedding_dim = 768
-        self.max_length = 512  # BERT limit
+        self.embedding_dim = 384  # all-MiniLM-L6-v2 dimensions
+        self.max_length = 512  # Model limit
         
     def preprocess_for_licitacoes(self, text: str) -> str:
         """
@@ -85,12 +92,12 @@ class NeuralMindEmbeddingService:
     
     def generate_embeddings(self, texts: List[str]) -> Optional[List[List[float]]]:
         """
-        Gera embeddings usando Hugging Face Inference API
+        Gera embeddings usando Hugging Face Inference Client
         
         Como funciona:
         1. Prepara textos (pré-processamento)
-        2. Faz requisição HTTP para HF
-        3. Retorna embeddings de 768 dimensões
+        2. Usa o cliente oficial do HuggingFace
+        3. Retorna embeddings de 384 dimensões
         """
         if not texts:
             return []
@@ -107,61 +114,57 @@ class NeuralMindEmbeddingService:
             if not processed_texts:
                 return []
             
-            logger.info(f"🧠 NeralMind: processando {len(processed_texts)} textos")
+            logger.info(f"🧠 HuggingFace: processando {len(processed_texts)} textos")
             
-            # Fazer requisição para Hugging Face
-            payload = {
-                "inputs": processed_texts,
-                "options": {
-                    "wait_for_model": True,  # Aguardar se modelo estiver carregando
-                    "use_cache": True        # Usar cache do HF se disponível
-                }
-            }
-            
-            response = requests.post(
-                self.api_url,
-                headers=self.headers,
-                json=payload,
-                timeout=45  # Timeout mais alto para primeiro carregamento
-            )
-            
-            # Tratar diferentes códigos de resposta
-            if response.status_code == 200:
-                embeddings = response.json()
-                
-                # Validar estrutura da resposta
-                if isinstance(embeddings, list) and len(embeddings) == len(processed_texts):
-                    logger.info(f"✅ {len(embeddings)} embeddings NeralMind gerados (768d)")
-                    return embeddings
-                else:
-                    logger.error(f"❌ Estrutura de resposta inválida: {type(embeddings)}")
-                    return None
+            # Gerar embeddings usando o cliente oficial
+            embeddings = []
+            for text in processed_texts:
+                try:
+                    # O cliente retorna numpy array, converter para lista
+                    embedding = self.client.feature_extraction(
+                        text=text,
+                        model=self.model_name
+                    )
                     
-            elif response.status_code == 503:
-                # Modelo carregando (comum na primeira requisição)
-                logger.info("⏳ Modelo NeralMind carregando no servidor HF...")
-                logger.info("💡 Primeira requisição pode demorar ~20-30s")
-                
-                # Aguardar e tentar novamente
-                time.sleep(20)
-                return self.generate_embeddings(texts)  # Retry uma vez
-                
-            elif response.status_code == 429:
-                # Rate limit (tier gratuito)
-                logger.warning("⚠️ Rate limit atingido - considere upgrade para HF Pro")
-                time.sleep(5)
-                return None
-                
+                    # Converter numpy array para lista Python
+                    if hasattr(embedding, 'tolist'):
+                        embedding_list = embedding.tolist()
+                    elif isinstance(embedding, list):
+                        embedding_list = embedding
+                    else:
+                        logger.error(f"❌ Formato inesperado: {type(embedding)}")
+                        return None
+                    
+                    embeddings.append(embedding_list)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Erro ao processar texto: {str(e)}")
+                    if "loading" in str(e).lower():
+                        logger.info("⏳ Modelo carregando... aguardando...")
+                        time.sleep(20)
+                        # Retry uma vez
+                        try:
+                            embedding = self.client.feature_extraction(
+                                text=text,
+                                model=self.model_name
+                            )
+                            embedding_list = embedding.tolist() if hasattr(embedding, 'tolist') else embedding
+                            embeddings.append(embedding_list)
+                        except Exception as retry_e:
+                            logger.error(f"❌ Falha no retry: {retry_e}")
+                            return None
+                    else:
+                        return None
+            
+            if len(embeddings) == len(processed_texts):
+                logger.info(f"✅ {len(embeddings)} embeddings HuggingFace gerados ({self.embedding_dim}d)")
+                return embeddings
             else:
-                logger.error(f"❌ Erro HF API: {response.status_code}")
-                logger.error(f"Resposta: {response.text}")
+                logger.error(f"❌ Número de embeddings inconsistente: {len(embeddings)} vs {len(processed_texts)}")
                 return None
                 
-        except requests.exceptions.Timeout:
-            logger.error("⏰ Timeout na requisição HF (>45s)")
-            return None
         except Exception as e:
-            logger.error(f"❌ Erro ao gerar embeddings NeralMind: {e}")
+            logger.error(f"❌ Erro geral ao gerar embeddings: {e}")
             return None
     
     def generate_single_embedding(self, text: str) -> Optional[List[float]]:
@@ -181,11 +184,11 @@ class NeuralMindEmbeddingService:
                 "Contratação de serviços de tecnologia da informação"
             )
             
-            if test_embedding and len(test_embedding) == 768:
-                logger.info("✅ Teste NeralMind passou - sistema pronto")
+            if test_embedding and len(test_embedding) == 384:
+                logger.info("✅ Teste HuggingFace passou - sistema pronto")
                 return True
             else:
-                logger.error("❌ Teste NeralMind falhou")
+                logger.error("❌ Teste HuggingFace falhou")
                 return False
                 
         except Exception as e:
@@ -197,7 +200,7 @@ class NeuralMindEmbeddingService:
         return {
             'model_name': self.model_name,
             'embedding_dim': self.embedding_dim,
-            'api_endpoint': self.api_url,
+            'api_provider': 'huggingface_inference_client',
             'has_api_key': bool(self.api_key),
             'preprocessing': 'licitacoes_brasileiras_optimized'
         } 

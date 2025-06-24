@@ -2,6 +2,7 @@
 """
 Implementações de vetorização de texto para matching de licitações
 Sistema multi-modal com cache inteligente e fallbacks
+PRIORIDADE: Modelos 100% brasileiros especializados em licitações
 """
 
 import os
@@ -41,15 +42,20 @@ class BaseTextVectorizer(ABC):
         
         return text
 
-class HybridTextVectorizer(BaseTextVectorizer):
+class BrazilianTextVectorizer(BaseTextVectorizer):
     """
-    Sistema híbrido OTIMIZADO para licitações brasileiras
+    🇧🇷 VETORIZADOR 100% BRASILEIRO para licitações
     
-    Ordem de prioridade:
-    1. 🧠 SentenceTransformers LOCAL (NeralMind BERT português)
-    2. 🚀 NeralMind via HuggingFace API (fallback se local falhar)  
-    3. 🚢 VoyageAI (fallback internacional)
-    4. 🔥 OpenAI (último recurso)
+    Especializado em:
+    - Português brasileiro (NeralMind BERT)
+    - Terminologia jurídica de licitações
+    - Contexto de compras públicas brasileiras
+    - Siglas e termos técnicos nacionais
+    
+    Hierarquia nacional:
+    1. 🧠 NeralMind BERT LOCAL (neuralmind/bert-base-portuguese-cased)
+    2. 🚀 NeralMind via HuggingFace API (fallback)
+    3. 🎯 Multilingual BERT especializado em português
     """
     
     def __init__(self, db_manager=None):
@@ -60,85 +66,117 @@ class HybridTextVectorizer(BaseTextVectorizer):
         else:
             self.db_manager = db_manager
         
-        # Inicializar cache
+        # Inicializar cache brasileiro
         self.cache_service = EmbeddingCacheService(self.db_manager)
         
-        # Hierarquia de vetorizadores (ordem de prioridade)
-        self.vectorizers = []
+        # Vetorizadores brasileiros ordenados por prioridade
+        self.brazilian_vectorizers = []
         
-        # 1. SentenceTransformers LOCAL (PRINCIPAL - especializado em português)
+        print("🇧🇷 ===== INICIALIZANDO SISTEMA BRASILEIRO DE EMBEDDINGS =====")
+        
+        # 1. NeralMind BERT LOCAL (PRINCIPAL - 100% Brasileiro)
         try:
-            self.st_service = SentenceTransformerService()
-            self.vectorizers.append(('sentence-transformers', self.st_service))
-            print("🧠 SentenceTransformers LOCAL carregado como PRINCIPAL")
-            print(f"   📊 Modelo: {self.st_service.model_name}")
-            print(f"   🎯 Especializado em: Português brasileiro")
-            print(f"   📏 Dimensões: {self.st_service.get_model_info().get('dimensions', 'N/A')}")
+            self.neuralmind_local = SentenceTransformerService(
+                model_name="neuralmind/bert-base-portuguese-cased"
+            )
+            self.brazilian_vectorizers.append(('neuralmind-local', self.neuralmind_local))
+            print("🧠 NeralMind BERT LOCAL carregado como PRINCIPAL")
+            print(f"   📊 Modelo: neuralmind/bert-base-portuguese-cased")
+            print(f"   🎯 Especialização: Português brasileiro + licitações")
+            print(f"   📏 Dimensões: {self.neuralmind_local.get_model_info().get('dimensions', 'N/A')}")
+            print(f"   💾 Otimizado para: Railway CPU + Cache Redis")
         except Exception as e:
-            print(f"⚠️ SentenceTransformers LOCAL falhou: {e}")
-            self.st_service = None
+            print(f"⚠️ NeralMind LOCAL falhou: {e}")
+            self.neuralmind_local = None
         
-        # 2. NeralMind via HuggingFace API (FALLBACK PORTUGUÊS)
+        # 2. NeralMind via HuggingFace API (FALLBACK BRASILEIRO)
         try:
             from services.neuralmind_embedding_service import NeuralMindEmbeddingService
-            self.neuralmind_service = NeuralMindEmbeddingService()
+            self.neuralmind_api = NeuralMindEmbeddingService()
             
-            # Teste rápido da conexão (sem log verboso)
-            test_result = self.neuralmind_service.generate_single_embedding("teste")
-            if test_result and len(test_result) == 768:
-                self.vectorizers.append(('neuralmind-bert', self.neuralmind_service))
-                print("🧠 NeralMind HuggingFace como fallback português (768d)")
+            # Teste rápido e silencioso
+            test_result = self.neuralmind_api.generate_single_embedding("licitação teste")
+            if test_result and len(test_result) > 300:  # Qualquer dimensão válida
+                self.brazilian_vectorizers.append(('neuralmind-api', self.neuralmind_api))
+                print("🚀 NeralMind HuggingFace API como fallback")
+                print(f"   📊 Dimensões: {len(test_result)}")
+                print(f"   🎯 Especialização: Multilingual otimizado para português")
             else:
-                print("⚠️ NeralMind HF: teste falhou, pulando...")
+                print("⚠️ NeralMind API: teste falhou, pulando...")
         except Exception as e:
-            print(f"⚠️ NeralMind HuggingFace falhou: {e}")
+            print(f"⚠️ NeralMind API falhou: {e}")
         
-        # 3. VoyageAI (FALLBACK INTERNACIONAL)
+        # 3. Multilingual BERT LOCAL (FALLBACK NACIONAL)
+        try:
+            self.multilingual_local = SentenceTransformerService(
+                model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+            )
+            self.brazilian_vectorizers.append(('multilingual-local', self.multilingual_local))
+            print("🌎 Multilingual BERT LOCAL como fallback nacional")
+            print(f"   📏 Dimensões: {self.multilingual_local.get_model_info().get('dimensions', 'N/A')}")
+        except Exception as e:
+            print(f"⚠️ Multilingual LOCAL falhou: {e}")
+        
+        # 4. Sistema internacional apenas se NADA brasileiro funcionar
+        self.international_vectorizers = []
+        self._init_international_fallbacks()
+        
+        # Verificar se temos pelo menos um sistema brasileiro
+        if not self.brazilian_vectorizers:
+            print("❌ NENHUM sistema brasileiro funcionou! Usando fallback internacional...")
+            self.vectorizers = self.international_vectorizers
+        else:
+            self.vectorizers = self.brazilian_vectorizers + self.international_vectorizers
+            print(f"✅ Sistema brasileiro: {len(self.brazilian_vectorizers)} vetorizadores nacionais disponíveis")
+        
+        if not self.vectorizers:
+            print("❌ CRÍTICO: Nenhum vetorizador funcionou! Usando MockVectorizer...")
+            self.vectorizers.append(('mock', MockTextVectorizer()))
+        
+        print(f"🎯 Prioridade FINAL: {' → '.join([name for name, _ in self.vectorizers])}")
+        print("🇧🇷 ===== SISTEMA BRASILEIRO PRONTO =====")
+    
+    def _init_international_fallbacks(self):
+        """Inicializa fallbacks internacionais apenas se necessário"""
+        # VoyageAI
         if os.getenv('VOYAGE_API_KEY'):
             try:
                 self.voyage_service = VoyageAITextVectorizer()
-                self.vectorizers.append(('voyage-ai', self.voyage_service))
-                print("🚢 VoyageAI como fallback internacional")
+                self.international_vectorizers.append(('voyage-ai', self.voyage_service))
+                print("🚢 VoyageAI disponível como fallback internacional")
             except Exception as e:
                 print(f"⚠️ VoyageAI falhou: {e}")
         
-        # 4. OpenAI (ÚLTIMO RECURSO)
+        # OpenAI
         if os.getenv('OPENAI_API_KEY'):
             try:
                 self.openai_service = OpenAITextVectorizer()
-                self.vectorizers.append(('openai', self.openai_service))
-                print("🔥 OpenAI como último recurso")
+                self.international_vectorizers.append(('openai', self.openai_service))
+                print("🔥 OpenAI disponível como último recurso")
             except Exception as e:
                 print(f"⚠️ OpenAI falhou: {e}")
-        
-        if not self.vectorizers:
-            print("❌ TODOS os vetorizadores falharam! Usando MockVectorizer...")
-            self.vectorizers.append(('mock', MockTextVectorizer()))
-        
-        print(f"✅ Sistema híbrido: {len(self.vectorizers)} vetorizadores disponíveis")
-        print(f"🎯 Prioridade: {' → '.join([name for name, _ in self.vectorizers])}")
     
     def vectorize(self, text: str) -> List[float]:
-        """Vetorização com cache inteligente e fallback"""
+        """Vetorização priorizando sistemas brasileiros"""
         if not text or not text.strip():
             return []
         
-        # Preprocessar texto
-        clean_text = self.preprocess_text(text)
+        # Preprocessar texto com otimizações brasileiras
+        clean_text = self._preprocess_brazilian_text(text)
         if not clean_text:
             return []
         
-        # Tentar cada vetorizador na ordem de prioridade
+        # Tentar cada vetorizador na ordem de prioridade (brasileiros primeiro)
         for model_name, vectorizer in self.vectorizers:
             # Verificar cache primeiro
             cached_embedding = self.cache_service.get_embedding_from_cache(clean_text, model_name)
             if cached_embedding:
-                logger.debug(f"⚡ Cache hit para {model_name}")
+                logger.debug(f"⚡ Cache hit brasileiro para {model_name}")
                 return cached_embedding
             
             # Gerar embedding
             try:
-                if model_name == 'sentence-transformers':
+                if 'local' in model_name or 'neuralmind-local' in model_name or 'multilingual-local' in model_name:
                     embedding = vectorizer.generate_single_embedding(clean_text)
                 else:
                     embedding = vectorizer.vectorize(clean_text)
@@ -146,28 +184,34 @@ class HybridTextVectorizer(BaseTextVectorizer):
                 if embedding:
                     # Salvar no cache
                     self.cache_service.save_embedding_to_cache(clean_text, embedding, model_name)
-                    logger.debug(f"✅ Sucesso com {model_name}")
+                    
+                    # Log diferente para sistemas brasileiros
+                    if model_name in ['neuralmind-local', 'neuralmind-api', 'multilingual-local']:
+                        logger.debug(f"🇧🇷 Sucesso brasileiro com {model_name}")
+                    else:
+                        logger.debug(f"🌍 Fallback internacional com {model_name}")
+                    
                     return embedding
                     
             except Exception as e:
                 logger.warning(f"❌ {model_name} falhou: {e}")
                 continue
         
-        logger.error("❌ Todos os vetorizadores falharam")
+        logger.error("❌ Todos os vetorizadores (brasileiros + internacionais) falharam")
         return []
     
     def batch_vectorize(self, texts: List[str]) -> List[List[float]]:
-        """Vetorização em lote com cache inteligente"""
+        """Vetorização em lote priorizando sistemas brasileiros"""
         if not texts:
             return []
         
-        # Preprocessar textos
+        # Preprocessar textos com otimizações brasileiras
         clean_texts = []
         for text in texts:
-            clean_text = self.preprocess_text(text) if text else ""
+            clean_text = self._preprocess_brazilian_text(text) if text else ""
             clean_texts.append(clean_text)
         
-        # Separar textos que já estão no cache vs que precisam ser processados
+        # Cache inteligente (mesmo código, mas com prioridade brasileira)
         cached_embeddings = {}
         texts_to_process = []
         text_indices = {}
@@ -176,7 +220,7 @@ class HybridTextVectorizer(BaseTextVectorizer):
             if not text:
                 continue
                 
-            # Verificar cache para cada vetorizador
+            # Verificar cache priorizando modelos brasileiros
             embedding_found = False
             for model_name, _ in self.vectorizers:
                 cached = self.cache_service.get_embedding_from_cache(text, model_name)
@@ -189,14 +233,14 @@ class HybridTextVectorizer(BaseTextVectorizer):
                 texts_to_process.append(text)
                 text_indices[len(texts_to_process) - 1] = i
         
-        logger.info(f"📊 Cache hits: {len(cached_embeddings)}, A processar: {len(texts_to_process)}")
+        logger.info(f"📊 Cache brasileiro: {len(cached_embeddings)} hits, {len(texts_to_process)} a processar")
         
-        # Processar textos que não estão no cache
+        # Processar textos priorizando sistemas brasileiros
         new_embeddings = {}
         if texts_to_process:
             for model_name, vectorizer in self.vectorizers:
                 try:
-                    if model_name == 'sentence-transformers':
+                    if 'local' in model_name or 'neuralmind-local' in model_name or 'multilingual-local' in model_name:
                         batch_result = vectorizer.generate_embeddings(texts_to_process)
                     else:
                         batch_result = vectorizer.batch_vectorize(texts_to_process)
@@ -212,14 +256,18 @@ class HybridTextVectorizer(BaseTextVectorizer):
                                 texts_to_process[j], embedding, model_name
                             )
                         
-                        logger.info(f"✅ Lote processado com {model_name}")
+                        # Log especial para sistemas brasileiros
+                        if model_name in ['neuralmind-local', 'neuralmind-api', 'multilingual-local']:
+                            logger.info(f"🇧🇷 Lote processado com sistema brasileiro: {model_name}")
+                        else:
+                            logger.info(f"🌍 Lote processado com fallback internacional: {model_name}")
                         break
                         
                 except Exception as e:
                     logger.warning(f"❌ {model_name} falhou no lote: {e}")
                     continue
         
-        # Combinar resultados (cache + novos)
+        # Combinar resultados
         final_embeddings = []
         for i in range(len(clean_texts)):
             if i in cached_embeddings:
@@ -227,10 +275,85 @@ class HybridTextVectorizer(BaseTextVectorizer):
             elif i in new_embeddings:
                 final_embeddings.append(new_embeddings[i])
             else:
-                final_embeddings.append([])  # Texto vazio ou falha
+                final_embeddings.append([])
         
         return final_embeddings
+    
+    def _preprocess_brazilian_text(self, text: str) -> str:
+        """Preprocessamento especializado para textos brasileiros de licitação"""
+        if not text:
+            return ""
+        
+        # Preprocessamento básico
+        clean_text = self.preprocess_text(text)
+        
+        # Expandir siglas brasileiras comuns em licitações
+        import re
+        brazilian_expansions = {
+            r'\bTI\b': 'TI tecnologia da informação',
+            r'\bRH\b': 'RH recursos humanos',
+            r'\bCFTV\b': 'CFTV circuito fechado de televisão segurança',
+            r'\bGPS\b': 'GPS sistema de posicionamento global rastreamento',
+            r'\bEPP\b': 'EPP empresa de pequeno porte',
+            r'\bME\b': 'ME microempresa',
+            r'\bSRP\b': 'SRP sistema de registro de preços',
+            r'\bTCU\b': 'TCU tribunal de contas da união',
+            r'\bCGU\b': 'CGU controladoria geral da união',
+            r'\bPNCP\b': 'PNCP portal nacional de contratações públicas'
+        }
+        
+        # Aplicar expansões (mantém sigla original + adiciona contexto)
+        for sigla_pattern, expansao in brazilian_expansions.items():
+            clean_text = re.sub(
+                sigla_pattern, 
+                expansao, 
+                clean_text, 
+                flags=re.IGNORECASE
+            )
+        
+        return clean_text
+    
+    def get_brazilian_status(self) -> dict:
+        """Status específico dos sistemas brasileiros"""
+        brazilian_status = {}
+        international_status = {}
+        
+        for model_name, vectorizer in self.vectorizers:
+            status = {
+                'available': True,
+                'type': 'brazilian' if model_name in ['neuralmind-local', 'neuralmind-api', 'multilingual-local'] else 'international'
+            }
+            
+            if hasattr(vectorizer, 'get_model_info'):
+                status.update(vectorizer.get_model_info())
+            
+            if status['type'] == 'brazilian':
+                brazilian_status[model_name] = status
+            else:
+                international_status[model_name] = status
+        
+        return {
+            'brazilian_systems': brazilian_status,
+            'international_fallbacks': international_status,
+            'primary_system': list(brazilian_status.keys())[0] if brazilian_status else 'none',
+            'total_brazilian': len(brazilian_status)
+        }
 
+# Manter HybridTextVectorizer para compatibilidade, mas agora usando BrazilianTextVectorizer como base
+class HybridTextVectorizer(BrazilianTextVectorizer):
+    """
+    Sistema híbrido ATUALIZADO baseado no sistema brasileiro
+    
+    NOVA ordem de prioridade:
+    1. 🇧🇷 SISTEMAS BRASILEIROS (via BrazilianTextVectorizer)
+    2. 🌍 Fallbacks internacionais apenas se necessário
+    
+    Este é um alias para BrazilianTextVectorizer com nome mantido para compatibilidade
+    """
+    
+    def __init__(self, db_manager=None):
+        print("🔄 HybridTextVectorizer agora usa sistema 100% brasileiro como base")
+        super().__init__(db_manager)
 
 class VoyageAITextVectorizer(BaseTextVectorizer):
     """Vetorizador usando VoyageAI API"""

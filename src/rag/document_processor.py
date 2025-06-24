@@ -139,9 +139,40 @@ class DocumentProcessor:
     
     def _extract_text_from_bytes(self, pdf_content: bytes) -> Optional[str]:
         """
-        🔧 NOVA FUNÇÃO: Extrai texto de conteúdo PDF em bytes
+        🔧 NOVA FUNÇÃO: Extrai texto de conteúdo PDF em bytes usando AdvancedTextExtractor
         """
         try:
+            # 🔧 CORREÇÃO: Usar AdvancedTextExtractor ao invés de PyMuPDF direto
+            from rag.advanced_text_extractor import AdvancedTextExtractor
+            
+            # Inicializar extrator avançado
+            extractor = AdvancedTextExtractor()
+            
+            # Extrair texto usando múltiplos engines
+            extraction_result = extractor.extract_text_from_bytes(pdf_content, "document.pdf")
+            
+            if extraction_result['success'] and extraction_result['text']:
+                logger.info(f"✅ Texto extraído com {extraction_result['extractor_used']}: {len(extraction_result['text'])} caracteres")
+                return extraction_result['text']
+            else:
+                logger.error(f"❌ Falha na extração: {extraction_result.get('error', 'Erro desconhecido')}")
+                
+                # 🔧 FALLBACK: Tentar PyMuPDF direto como último recurso
+                logger.info("🔄 Tentando fallback PyMuPDF...")
+                return self._extract_with_pymupdf_fallback(pdf_content)
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no AdvancedTextExtractor: {e}")
+            # 🔧 FALLBACK: Tentar PyMuPDF direto
+            return self._extract_with_pymupdf_fallback(pdf_content)
+    
+    def _extract_with_pymupdf_fallback(self, pdf_content: bytes) -> Optional[str]:
+        """
+        Fallback usando PyMuPDF direto (método antigo)
+        """
+        try:
+            import pymupdf
+            
             # Extrair texto usando PyMuPDF
             pdf_document = pymupdf.open(stream=pdf_content, filetype="pdf")
             full_text = ""
@@ -153,11 +184,11 @@ class DocumentProcessor:
             
             pdf_document.close()
             
-            logger.info(f"✅ Texto extraído: {len(full_text)} caracteres")
+            logger.info(f"✅ Fallback PyMuPDF: {len(full_text)} caracteres")
             return full_text
             
         except Exception as e:
-            logger.error(f"❌ Erro ao extrair texto do PDF: {e}")
+            logger.error(f"❌ Fallback PyMuPDF também falhou: {e}")
             return None
     
     def create_intelligent_chunks(self, text: str, documento_id: str) -> List[DocumentChunk]:

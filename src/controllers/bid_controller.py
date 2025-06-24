@@ -106,12 +106,26 @@ class BidController:
                     'message': 'Licitação não encontrada'
                 }), 404
             
+            # 🔍 DEBUG: Log dos campos de órgão para verificar se estão sendo enviados
+            logger.info(f"🏢 Campos de órgão para {pncp_id}:")
+            logger.info(f"  razao_social: {bid.get('razao_social')}")
+            logger.info(f"  nome_unidade: {bid.get('nome_unidade')}")
+            logger.info(f"  municipio_nome: {bid.get('municipio_nome')}")
+            logger.info(f"  uf_nome: {bid.get('uf_nome')}")
+            logger.info(f"  orgao_cnpj: {bid.get('orgao_cnpj')}")
+
             # Buscar itens da licitação formatados
             bid_items, items_message = self.bid_service.get_bid_items(pncp_id)
             
             # Adicionar itens ao bid
             bid['itens'] = bid_items
             bid['possui_itens'] = len(bid_items) > 0
+            
+            # 🔍 DEBUG: Log das datas para verificar se estão sendo enviadas
+            logger.info(f"📅 Datas sendo enviadas para {pncp_id}:")
+            logger.info(f"  data_abertura_proposta: {bid.get('data_abertura_proposta')}")
+            logger.info(f"  data_encerramento_proposta: {bid.get('data_encerramento_proposta')}")
+            logger.info(f"  data_publicacao: {bid.get('data_publicacao')}")
             
             return jsonify({
                 'success': True,
@@ -639,8 +653,8 @@ class BidController:
             
             # Configuração do Supabase
             supabase_url = os.getenv('SUPABASE_URL')
-            # Tentar usar service key primeiro (para Storage), depois anon key
-            supabase_key = os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_ANON_KEY')
+            # 🔧 CORREÇÃO: Usar ANON_KEY que funciona com Storage
+            supabase_key = os.getenv('SUPABASE_ANON_KEY') or os.getenv('SUPABASE_SERVICE_KEY')
             
             if not supabase_url or not supabase_key:
                 logger.error("❌ Credenciais do Supabase não encontradas")

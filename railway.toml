@@ -22,7 +22,7 @@ FLASK_ENV = "production"
 FLASK_DEBUG = "false"
 LOG_LEVEL = "INFO"
 VECTORIZER_TYPE = "hybrid"
-CORS_ORIGINS = "https://alicit-saas.vercel.app,http://localhost:3000"
+CORS_ORIGINS = "https://alicit-front.vercel.app,https://alicit-saas.vercel.app,http://localhost:3000,http://localhost:3001"
 
 # Configurações específicas do Railway
 RAILWAY_ENVIRONMENT = "production"
@@ -49,6 +49,7 @@ TORCH_HOME = "/app/cache/torch"
 # SUPABASE_ANON_KEY = "..."
 # OPENAI_API_KEY = "sk-..."
 # VOYAGE_API_KEY = "pa-..."
+# HUGGINGFACE_API_KEY = "hf_..."
 # SECRET_KEY = "..."
 # REDIS_URL = "redis://..."
 # ===============================================

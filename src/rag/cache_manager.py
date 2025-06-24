@@ -7,29 +7,31 @@ import logging
 from typing import Optional, Dict, Any, List
 import pickle
 from datetime import datetime, timedelta
+from config.redis_config import RedisConfig
 
 logger = logging.getLogger(__name__)
 
 class CacheManager:
-    """Gerenciador de cache Redis para RAG"""
+    """Gerenciador de cache Redis para RAG com suporte ao Railway"""
     
-    def __init__(self, redis_host: str = "localhost", redis_port: int = 6379, 
-                 redis_db: int = 0, default_ttl: int = 3600):
-        self.redis_client = redis.Redis(
-            host=redis_host, 
-            port=redis_port, 
-            db=redis_db, 
-            decode_responses=False  # Para pickle
-        )
+    def __init__(self, default_ttl: int = 3600, **kwargs):
+        """
+        Inicializa CacheManager usando configuração unificada
+        kwargs são mantidos para compatibilidade mas ignorados
+        """
         self.default_ttl = default_ttl  # 1 hora padrão
         
-        # Testar conexão
-        try:
-            self.redis_client.ping()
-            logger.info("✅ Redis conectado com sucesso")
-        except redis.ConnectionError:
+        # 🔧 NOVA CONFIGURAÇÃO: Usar RedisConfig unificado
+        logger.info("🔄 Inicializando Redis com configuração unificada...")
+        self.redis_client = RedisConfig.get_redis_client()
+        
+        if self.redis_client:
+            # Exibir informações da configuração
+            redis_info = RedisConfig.get_redis_info()
+            url_info = redis_info.get('url_safe', f"{redis_info['host']}:{redis_info['port']}")
+            logger.info(f"📊 Redis configurado: {redis_info['type']} - {url_info}")
+        else:
             logger.warning("⚠️ Redis não disponível - cache desabilitado")
-            self.redis_client = None
     
     def _generate_key(self, prefix: str, identifier: str) -> str:
         """Gera chave padronizada para cache"""

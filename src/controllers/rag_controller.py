@@ -1,6 +1,7 @@
 from flask import request, jsonify
 import logging
 from typing import Dict, Any
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,50 @@ class RAGController:
                     'success': False,
                     'error': 'licitacao_id é obrigatório'
                 }), 400
+            
+            # 🎯 NOVA VALIDAÇÃO: Detectar se recebeu pncp_id em vez de licitacao_id
+            uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+            pncp_pattern = re.compile(r'^\d+.*-.*\d+/\d{4}$')  # Formato típico de PNCP ID
+            
+            if not uuid_pattern.match(licitacao_id):
+                if pncp_pattern.match(licitacao_id):
+                    logger.warning(f"⚠️ Recebido pncp_id '{licitacao_id}' em vez de licitacao_id UUID")
+                    
+                    # Tentar converter pncp_id para licitacao_id
+                    try:
+                        from db.database_manager import DatabaseManager
+                        db_manager = DatabaseManager()
+                        
+                        with db_manager.get_connection() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute("""
+                                    SELECT id FROM licitacoes WHERE pncp_id = %s
+                                """, (licitacao_id,))
+                                result = cursor.fetchone()
+                                
+                                if result:
+                                    uuid_licitacao_id = result[0]
+                                    logger.info(f"✅ Convertido pncp_id '{licitacao_id}' para UUID: {uuid_licitacao_id}")
+                                    licitacao_id = uuid_licitacao_id
+                                else:
+                                    logger.error(f"❌ Licitação não encontrada para pncp_id: {licitacao_id}")
+                                    return jsonify({
+                                        'success': False,
+                                        'error': f'Licitação não encontrada para pncp_id: {licitacao_id}'
+                                    }), 404
+                    except Exception as e:
+                        logger.error(f"❌ Erro ao converter pncp_id para UUID: {e}")
+                        return jsonify({
+                            'success': False,
+                            'error': f'Erro ao processar pncp_id: {str(e)}'
+                        }), 500
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Formato inválido para licitacao_id. Esperado UUID ou pncp_id válido, recebido: {licitacao_id}'
+                    }), 400
+            
+            print(f"licitacao_id final (UUID): {licitacao_id}")
             
             # Processar com RAG
             result = self.rag_service.process_or_query(licitacao_id, query)

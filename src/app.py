@@ -57,12 +57,12 @@ def _configure_app(app: Flask, config: dict = None) -> None:
         'JSON_SORT_KEYS': False,
         'JSONIFY_PRETTYPRINT_REGULAR': True,
         # Configurações RAG
-        'REDIS_HOST': os.getenv('REDIS_HOST', 'localhost'),
+        'REDIS_HOST': os.getenv('REDIS_HOST'),
         'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY'),
     }
     
     # Validar configurações essenciais
-    required_configs = ['SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'DATABASE_URL']
+    required_configs = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'DATABASE_URL']
     missing_configs = []
     
     for config_key in required_configs:
@@ -81,7 +81,7 @@ def _configure_app(app: Flask, config: dict = None) -> None:
     app.logger.info("🔧 Configurações carregadas do config.env:")
     app.logger.info(f"  - SUPABASE_URL: {app.config['SUPABASE_URL']}")
     app.logger.info(f"  - DATABASE_URL: {'✅ Configurado' if app.config['DATABASE_URL'] else '❌ Não configurado'}")
-    app.logger.info(f"  - SUPABASE_SERVICE_KEY: {'✅ Configurado' if app.config['SUPABASE_SERVICE_KEY'] else '❌ Não configurado'}")
+    app.logger.info(f"  - SUPABASE_ANON_KEY: {'✅ Configurado' if app.config['SUPABASE_ANON_KEY'] else '❌ Não configurado'}")
     app.logger.info(f"  - REDIS_HOST: {app.config['REDIS_HOST']}")
     app.logger.info(f"  - LOG_LEVEL: {app.config['LOG_LEVEL']}")
     app.logger.info(f"  - DEBUG: {app.config['DEBUG']}")
@@ -151,8 +151,8 @@ def _initialize_rag_service(app: Flask) -> None:
         app.rag_config = {
             'openai_api_key': openai_api_key,
             'supabase_url': app.config.get('SUPABASE_URL'),
-            'supabase_key': app.config.get('SUPABASE_SERVICE_KEY'),
-            'redis_host': app.config.get('REDIS_HOST', 'localhost')
+            'supabase_key': app.config.get('SUPABASE_ANON_KEY'),  # 🔧 CORREÇÃO: usar ANON_KEY
+            # Redis configurado via RedisConfig unificado - não precisa passar host
         }
         
         # 3. Marcar que RAG está pronto para ser inicializado
@@ -189,12 +189,12 @@ def get_rag_service(app):
             supabase_key=app.rag_config['supabase_key']
         )
 
-        # Criar a instância do serviço
+        # Criar a instância do serviço (Redis configurado automaticamente)
         rag_service = RAGService(
             db_manager=db_manager,
             unified_processor=unified_processor,
-            openai_api_key=app.rag_config['openai_api_key'],
-            redis_host=app.rag_config['redis_host']
+            openai_api_key=app.rag_config['openai_api_key']
+            # Redis configurado automaticamente via RedisConfig
         )
         
         app.rag_service = rag_service
@@ -236,12 +236,18 @@ def _register_blueprints(app: Flask) -> None:
         from routes.system_routes import system_routes
         from routes.rag_routes import create_rag_routes # ✅ NOVO
         from routes.auth_routes import auth_routes # ✅ AUTENTICAÇÃO
+        from routes.pncp_routes import pncp_routes # ✅ PNCP
+        from routes.search_routes import search_routes # ✅ BUSCA UNIFICADA
+        from routes.quality_match_routes import quality_match_routes # 🎯 QUALITY MATCHING
   
         # Registrar blueprints
         app.register_blueprint(auth_routes)  # ✅ Autenticação primeiro
         app.register_blueprint(company_routes)
         app.register_blueprint(bid_routes)
         app.register_blueprint(match_routes)
+        app.register_blueprint(quality_match_routes)  # 🎯 Quality Matching
+        app.register_blueprint(pncp_routes)  # ✅ PNCP
+        app.register_blueprint(search_routes)  # ✅ BUSCA UNIFICADA
     
         app.register_blueprint(system_routes)
         
@@ -262,9 +268,11 @@ def _register_blueprints(app: Flask) -> None:
         app.logger.info("  ✅ Companies: 8 endpoints (/api/companies/*)")
         app.logger.info("  ✅ Bids: 10 endpoints (/api/bids/*)")
         app.logger.info("  ✅ Matches: 4 endpoints (/api/matches/*)")
+        app.logger.info("  🎯 Quality Matches: 4 endpoints (/api/quality-matches/*)")
+        app.logger.info("  ✅ PNCP: 8 endpoints (/api/pncp/*)")
         app.logger.info("  ✅ System: 7 endpoints (/api/status/*, /api/config/*, etc)")
         app.logger.info("  🆕 Chat: 8 endpoints (/api/licitacoes/*/chat, /api/admin/rag)")
-        app.logger.info("  📊 TOTAL: 64 endpoints ativos")
+        app.logger.info("  📊 TOTAL: 76 endpoints ativos")
         
         app.logger.info("✅ Todos os blueprints registrados com sucesso!")
         

@@ -128,6 +128,41 @@ class DatabaseManager:
     def close_pool(self):
         """Compatibilidade - não há pool para fechar"""
         logger.info("💡 DatabaseManager simplificado - sem pool para fechar")
+    
+    def execute_query(self, query: str, params=None, fetch_one=False, fetch_all=False):
+        """
+        Executar query SQL com parâmetros
+        
+        Args:
+            query: SQL query para executar
+            params: Parâmetros para a query (dict ou tuple)
+            fetch_one: Se deve retornar apenas um resultado
+            fetch_all: Se deve retornar todos os resultados
+            
+        Returns:
+            Resultado da query ou None
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    if params:
+                        cursor.execute(query, params)
+                    else:
+                        cursor.execute(query)
+                    
+                    if fetch_one:
+                        return cursor.fetchone()
+                    elif fetch_all:
+                        return cursor.fetchall()
+                    else:
+                        # Para INSERT/UPDATE/DELETE, retornar número de linhas afetadas
+                        return cursor.rowcount
+                        
+        except Exception as e:
+            logger.error(f"❌ Erro ao executar query: {e}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Params: {params}")
+            raise e
 
 # Instância global do DatabaseManager (compatibilidade)
 # Inicializar com lazy loading

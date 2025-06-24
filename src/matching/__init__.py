@@ -4,6 +4,7 @@ Pacote de matching de licitações com API do PNCP
 
 from .vectorizers import (
     BaseTextVectorizer,
+    BrazilianTextVectorizer,
     OpenAITextVectorizer,
     VoyageAITextVectorizer, 
     HybridTextVectorizer,
@@ -36,6 +37,7 @@ from .matching_engine import (
 __all__ = [
     # Vectorizers
     'BaseTextVectorizer',
+    'BrazilianTextVectorizer',
     'OpenAITextVectorizer',
     'VoyageAITextVectorizer', 
     'HybridTextVectorizer',

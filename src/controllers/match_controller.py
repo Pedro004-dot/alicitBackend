@@ -380,7 +380,7 @@ class MatchController:
             logger.info("📊 Obtendo estatísticas de matches")
             
             # Usar repository para estatísticas detalhadas
-            stats = self.match_repository.get_match_statistics()
+            stats = self.match_repository.get_matches_statistics()
             
             return jsonify({
                 'success': True,
