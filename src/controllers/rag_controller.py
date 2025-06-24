@@ -214,19 +214,67 @@ class RAGController:
             if result['success']:
                 return jsonify({
                     'success': True,
-                    'message': 'Reprocessamento concluído com sucesso',
-                    'details': result,
-                    'reprocessed': True
+                    'message': 'Reprocessamento iniciado com sucesso',
+                    'data': result
                 }), 200
             else:
                 return jsonify({
                     'success': False,
-                    'error': result.get('error'),
-                    'details': result
-                }), 400
-            
+                    'error': result.get('error', 'Erro no reprocessamento')
+                }), 500
+                
         except Exception as e:
             logger.error(f"❌ Erro no reprocessamento: {e}")
+            return jsonify({
+                'success': False,
+                'error': f'Erro interno: {str(e)}'
+            }), 500
+    
+    # 🆕 NOVO MÉTODO: Endpoint de vetorização para preparação automática
+    def vectorize_documents(self) -> Dict[str, Any]:
+        """Endpoint para vetorização de documentos (usado na preparação automática)"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({
+                    'success': False,
+                    'error': 'JSON payload obrigatório'
+                }), 400
+            
+            licitacao_id = data.get('licitacao_id')
+            
+            if not licitacao_id:
+                return jsonify({
+                    'success': False,
+                    'error': 'licitacao_id é obrigatório'
+                }), 400
+            
+            logger.info(f"🔄 Iniciando vetorização para licitacao_id: {licitacao_id}")
+            
+            # Chamar o método de vetorização do RAG service
+            result = self.rag_service._vectorize_licitacao(licitacao_id)
+            
+            if result['success']:
+                return jsonify({
+                    'success': True,
+                    'message': 'Vetorização concluída com sucesso',
+                    'data': {
+                        'licitacao_id': licitacao_id,
+                        'processed_documents': result.get('processed_documents', 0),
+                        'total_chunks': result.get('total_chunks', 0),
+                        'embedding_cache_hits': result.get('embedding_cache_hits', 0),
+                        'already_vectorized': result.get('already_vectorized', False)
+                    }
+                }), 200
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': result.get('error', 'Erro na vetorização'),
+                    'details': result.get('processing_details')
+                }), 500
+                
+        except Exception as e:
+            logger.error(f"❌ Erro na vetorização: {e}")
             return jsonify({
                 'success': False,
                 'error': f'Erro interno: {str(e)}'

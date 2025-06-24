@@ -188,13 +188,13 @@ def run_quality_matching(quality_level: str = "high", clear_existing: bool = Tru
             # Usar threshold da configuração de qualidade
             if score >= config['threshold_phase1']:
                 if analysis.get('should_accept', True):
-                    # 🤖 VALIDAÇÃO LLM PARA SCORES ALTOS
-                    should_accept_match = True
+                    # 🔥 NOVA POLÍTICA: TODOS OS MATCHES PASSAM PELO LLM
+                    should_accept_match = False  # Por padrão, rejeitar até LLM aprovar
                     final_score = score
                     final_justificativa = justificativa
                     
-                    if llm_validator and llm_validator.should_validate_with_llm(score):
-                        print(f"         🤖 VALIDAÇÃO LLM (score {score:.1%} > {llm_validator.HIGH_SCORE_THRESHOLD:.1%})")
+                    if llm_validator:
+                        print(f"         🤖 VALIDAÇÃO LLM OBRIGATÓRIA (score {score:.1%})")
                         
                         validation = llm_validator.validate_match(
                             empresa_nome=company['nome'],
@@ -211,10 +211,19 @@ def run_quality_matching(quality_level: str = "high", clear_existing: bool = Tru
                             final_score = validation['confidence']
                             final_justificativa += f" | LLM: {validation['reasoning'][:100]}..."
                             stats['llm_approved'] += 1
+                            should_accept_match = True  # ✅ APROVADO PELO LLM
                         else:
                             print(f"         🚫 LLM REJEITOU: {validation['reasoning'][:80]}...")
-                            should_accept_match = False
                             stats['llm_rejected'] += 1
+                            should_accept_match = False  # ❌ REJEITADO PELO LLM
+                    else:
+                        # 🚨 FALLBACK: Se LLM indisponível, aplicar threshold mais rigoroso
+                        if score >= 0.85:  # Apenas scores muito altos sem LLM
+                            should_accept_match = True
+                            print(f"         ⚠️  LLM indisponível - aprovado por score alto ({score:.1%})")
+                        else:
+                            should_accept_match = False
+                            print(f"         ❌ LLM indisponível - rejeitado por score insuficiente ({score:.1%})")
                     
                     if should_accept_match:
                         potential_matches.append((company, final_score, final_justificativa, analysis))
@@ -222,7 +231,7 @@ def run_quality_matching(quality_level: str = "high", clear_existing: bool = Tru
                         print(f"         ✅ MATCH DE QUALIDADE ACEITO!")
                     else:
                         stats['quality_rejected'] += 1
-                        print(f"         ❌ Rejeitado pela validação LLM")
+                        print(f"         ❌ Match rejeitado - NÃO será salvo no banco")
                 else:
                     stats['quality_rejected'] += 1
                     print(f"         ❌ Rejeitado por baixa qualidade")
@@ -410,6 +419,7 @@ def _print_quality_final_report(stats: Dict[str, Any], quality_level: str, cache
         print(f"   🔍 Total analisados: {stats['llm_validations_count']}")
         print(f"   ✅ Aprovados pelo LLM: {stats['llm_approved']}")
         print(f"   🚫 Rejeitados pelo LLM: {stats['llm_rejected']}")
+        print(f"   📊 BENEFÍCIO: {stats['llm_rejected']} matches irrelevantes EVITADOS no banco!")
         llm_approval_rate = (stats['llm_approved'] / stats['llm_validations_count'] * 100) if stats['llm_validations_count'] > 0 else 0
         print(f"   📈 Taxa de aprovação LLM: {llm_approval_rate:.1f}%")
     

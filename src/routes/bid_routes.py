@@ -166,6 +166,48 @@ def get_active_bids():
     """
     return controller.get_active_bids()
 
+# ====== NOVAS ROTAS PARA PREPARAÇÃO AUTOMÁTICA DE ANÁLISE ======
+
+@bid_routes.route('/prepare-analysis', methods=['POST'])
+def prepare_analysis():
+    """
+    POST /api/bids/prepare-analysis - Iniciar preparação automática de análise
+    
+    DESCRIÇÃO:
+    - Inicia o processo de download e processamento de documentos
+    - Utiliza o UnifiedDocumentProcessor para baixar e extrair texto
+    - Usado pelo frontend para preparação automática do ambiente
+    
+    PARÂMETROS (Body JSON):
+    - licitacao_id: ID UUID da licitação (obrigatório)
+    - pncp_id: ID do PNCP da licitação (obrigatório)
+    
+    RETORNA:
+    - Status de início do processamento
+    - ID do processo para monitoramento
+    """
+    return controller.prepare_analysis()
+
+@bid_routes.route('/preparation-status', methods=['GET'])
+def get_preparation_status():
+    """
+    GET /api/bids/preparation-status?licitacao_id=<id> - Status da preparação automática
+    
+    DESCRIÇÃO:
+    - Verifica o status do processamento de documentos
+    - Usado pelo frontend para polling durante preparação
+    - Retorna progresso e etapa atual do processamento
+    
+    PARÂMETROS (Query):
+    - licitacao_id: ID da licitação (obrigatório)
+    
+    RETORNA:
+    - Status do processamento (preparing/completed/error)
+    - Informações de progresso e etapa atual
+    - Lista de documentos processados
+    """
+    return controller.get_preparation_status()
+
 # ====== NOVAS ROTAS DE OPORTUNIDADES DE NEGÓCIO ======
 
 @bid_routes.route('/srp-opportunities', methods=['GET'])
@@ -418,5 +460,23 @@ def get_bid_statistics():
     - Métricas de desempenho do sistema
     """
     return controller.get_bid_statistics()
+
+@bid_routes.route('/cleanup-preparation', methods=['DELETE'])
+def cleanup_preparation():
+    """
+    DELETE /api/bids/cleanup-preparation?licitacao_id=<id> - Limpar preparação falhada
+    
+    DESCRIÇÃO:
+    - Remove arquivos temporários e dados de processamento incompleto
+    - Permite nova tentativa de preparação automática
+    - Usado quando há erro no processamento de documentos
+    
+    PARÂMETROS (Query String):
+    - licitacao_id: ID UUID da licitação (obrigatório)
+    
+    RETORNA:
+    - Status da limpeza e arquivos removidos
+    """
+    return controller.cleanup_preparation()
 
  

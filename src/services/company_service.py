@@ -74,13 +74,13 @@ class CompanyService:
             logger.error(f"Erro ao buscar empresas por nome '{search_term}': {e}")
             return []
     
-    def search_companies_by_keywords(self, keywords: List[str], limit: int = 50, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Buscar empresas por palavras-chave"""
+    def search_companies_by_products(self, products: List[str], limit: int = 50, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Buscar empresas por produtos/serviços"""
         try:
-            companies = self.company_repo.search_by_keywords(keywords, limit, user_id=user_id)
+            companies = self.company_repo.search_by_products(products, limit, user_id=user_id)
             return self._format_companies_for_frontend(companies)
         except Exception as e:
-            logger.error(f"Erro ao buscar empresas por keywords {keywords}: {e}")
+            logger.error(f"Erro ao buscar empresas por produtos {products}: {e}")
             return []
     
     def create_company(self, company_data: Dict[str, Any], user_id: Optional[str] = None) -> Dict[str, Any]:
@@ -88,6 +88,13 @@ class CompanyService:
         Criar nova empresa com validação de negócio
         """
         try:
+            # 🔀 COMPATIBILIDADE: Converter 'palavras_chave' para 'produtos' se o campo antigo for enviado
+            if 'palavras_chave' in company_data:
+                logger.warning("Campo 'palavras_chave' obsoleto detectado na requisição. Convertendo para 'produtos'.")
+                if 'produtos' not in company_data: # Não sobrescrever se 'produtos' já existir
+                    company_data['produtos'] = company_data['palavras_chave']
+                del company_data['palavras_chave']
+
             # Validações de negócio
             self._validate_company_data(company_data)
             
@@ -106,9 +113,9 @@ class CompanyService:
                 if existing:
                     raise ValueError(f"CNPJ {company_data['cnpj']} já está cadastrado")
             
-            # Processar palavras-chave
-            if 'palavras_chave' in company_data and isinstance(company_data['palavras_chave'], list):
-                company_data['palavras_chave'] = json.dumps(company_data['palavras_chave'])
+            # Processar produtos
+            if 'produtos' in company_data and isinstance(company_data['produtos'], list):
+                company_data['produtos'] = json.dumps(company_data['produtos'])
             
             # Criar empresa
             created_company = self.company_repo.create(company_data)
@@ -141,6 +148,13 @@ class CompanyService:
         Atualizar empresa existente com validação
         """
         try:
+            # 🔀 COMPATIBILIDADE: Converter 'palavras_chave' para 'produtos' se o campo antigo for enviado
+            if 'palavras_chave' in company_data:
+                logger.warning("Campo 'palavras_chave' obsoleto detectado na requisição. Convertendo para 'produtos'.")
+                if 'produtos' not in company_data: # Não sobrescrever se 'produtos' já existir
+                    company_data['produtos'] = company_data['palavras_chave']
+                del company_data['palavras_chave']
+
             # Verificar se empresa existe e pertence ao usuário
             if user_id:
                 existing_company = self.company_repo.find_by_id_and_user(company_id, user_id)
@@ -171,9 +185,9 @@ class CompanyService:
                 if existing and existing['id'] != company_id:
                     raise ValueError(f"CNPJ {company_data['cnpj']} já está em uso por outra empresa")
             
-            # Processar palavras-chave
-            if 'palavras_chave' in company_data and isinstance(company_data['palavras_chave'], list):
-                company_data['palavras_chave'] = json.dumps(company_data['palavras_chave'])
+            # Processar produtos
+            if 'produtos' in company_data and isinstance(company_data['produtos'], list):
+                company_data['produtos'] = json.dumps(company_data['produtos'])
             
             # Atualizar empresa
             updated_company = self.company_repo.update(company_id, company_data)
@@ -282,9 +296,9 @@ class CompanyService:
                 try:
                     self._validate_company_data(company_data)
                     
-                    # Processar palavras-chave
-                    if 'palavras_chave' in company_data and isinstance(company_data['palavras_chave'], list):
-                        company_data['palavras_chave'] = json.dumps(company_data['palavras_chave'])
+                    # Processar produtos
+                    if 'produtos' in company_data and isinstance(company_data['produtos'], list):
+                        company_data['produtos'] = json.dumps(company_data['produtos'])
                     
                     validated_companies.append(company_data)
                 except Exception as e:
@@ -350,13 +364,13 @@ class CompanyService:
     
     def _format_company_for_frontend(self, company: Dict[str, Any]) -> Dict[str, Any]:
         """Formatar empresa individual para frontend"""
-        # Processar palavras_chave JSON
-        palavras_chave = company.get('palavras_chave')
-        if isinstance(palavras_chave, str):
+        # Processar produtos JSON (que podem vir como string)
+        produtos = company.get('produtos')
+        if isinstance(produtos, str):
             try:
-                palavras_chave = json.loads(palavras_chave)
+                produtos = json.loads(produtos)
             except json.JSONDecodeError:
-                palavras_chave = []
+                produtos = []
         
         return {
             'id': str(company['id']),
@@ -364,7 +378,7 @@ class CompanyService:
             'razao_social': company.get('razao_social', ''),
             'cnpj': company.get('cnpj', ''),
             'descricao_servicos_produtos': company.get('descricao_servicos_produtos', ''),
-            'palavras_chave': palavras_chave if palavras_chave else [],
+            'produtos': produtos if produtos else [],
             'setor_atuacao': company.get('setor_atuacao', ''),
             'created_at': company.get('created_at').isoformat() if company.get('created_at') else None,
             'updated_at': company.get('updated_at').isoformat() if company.get('updated_at') else None

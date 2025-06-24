@@ -566,7 +566,7 @@ class BidService:
             'orgao_cnpj': bid.get('orgao_cnpj'),
             'razao_social': bid.get('razao_social'),  # Nova razão social do órgão licitante
             'uf': format_uf(bid.get('uf')),  # UF formatado garantindo string válida
-            # Novos campos da unidadeOrgao
+            # Novos campos da unidadeOrga
             'uf_nome': bid.get('uf_nome'),  # Nome completo do estado (ex: Minas Gerais)
             'nome_unidade': bid.get('nome_unidade'),  # Nome da unidade do órgão (ex: MUNICIPIO DE FRONTEIRA- MG)
             'municipio_nome': bid.get('municipio_nome'),  # Nome do município (ex: Fronteira)
@@ -865,41 +865,241 @@ class BidService:
             return [], f"Erro ao buscar itens da licitação: {str(e)}"
 
     def _format_items_for_frontend(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Formatar itens de licitação para frontend"""
+        """
+        Formatar itens de licitação para o frontend com campos necessários
+        """
         formatted_items = []
-        
         for item in items:
             formatted_item = {
-                # Dados do item
-                'id': str(item.get('id', '')),
+                'id': item.get('id'),
                 'numero_item': item.get('numero_item'),
-                'descricao': item.get('descricao'),
-                'quantidade': float(item.get('quantidade', 0)) if item.get('quantidade') else 0,
+                'nome_item': item.get('nome_item'),
+                'descricao_complementar': item.get('descricao_complementar'),
+                'quantidade': item.get('quantidade'),
+                'valor_unitario': item.get('valor_unitario'),
+                'valor_total': item.get('valor_total_estimado', item.get('valor_unitario', 0) * item.get('quantidade', 0)),
+                'ncm_nbs': item.get('ncm_nbs'),
                 'unidade_medida': item.get('unidade_medida'),
-                'valor_unitario_estimado': float(item.get('valor_unitario_estimado', 0)) if item.get('valor_unitario_estimado') else 0,
-                
-                # Novos campos da API 2
                 'material_ou_servico': item.get('material_ou_servico'),
-                'material_ou_servico_nome': "Material" if item.get('material_ou_servico') == 'M' else "Serviço",
-                'ncm_nbs_codigo': item.get('ncm_nbs_codigo'),
-                'criterio_julgamento_nome': item.get('criterio_julgamento_nome'),
-                'tipo_beneficio_nome': item.get('tipo_beneficio_nome'),
-                'situacao_item_nome': item.get('situacao_item_nome'),
-                'tem_resultado': item.get('tem_resultado', False),
-                
-                # Dados da licitação pai (do JOIN)
-                'licitacao': {
-                    'pncp_id': item.get('pncp_id'),
-                    'objeto_compra': item.get('objeto_compra'),
-                    'orgao_cnpj': item.get('orgao_cnpj'),
-                    'uf': item.get('uf')
-                }
+                'beneficio_micro_epp': item.get('beneficio_micro_epp', False),
+                'participacao_exclusiva_me_epp': item.get('participacao_exclusiva_me_epp', False),
+                'pncp_id': item.get('licitacao_pncp_id'),
+                'criterio_julgamento': item.get('criterio_julgamento'),
+                'criterio_valor_nome': item.get('criterio_valor_nome')
             }
-            
-            # Calcular valor total do item
-            if formatted_item['quantidade'] and formatted_item['valor_unitario_estimado']:
-                formatted_item['valor_total_item'] = formatted_item['quantidade'] * formatted_item['valor_unitario_estimado']
-            
             formatted_items.append(formatted_item)
-        
-        return formatted_items 
+        return formatted_items
+    
+    # ===== NOVOS MÉTODOS PARA PREPARAÇÃO AUTOMÁTICA DE ANÁLISE =====
+    
+    def start_document_preparation(self, licitacao_id: str, pncp_id: str) -> Tuple[Dict[str, Any], str]:
+        """
+        Iniciar processamento automático de documentos de uma licitação
+        """
+        try:
+            # Importar o UnifiedDocumentProcessor aqui para evitar imports circulares
+            from core.unified_document_processor import UnifiedDocumentProcessor
+            import os
+            
+            logger.info(f"🚀 Iniciando preparação automática para licitacao_id: {licitacao_id}, pncp_id: {pncp_id}")
+            
+            # Verificar se licitação existe
+            bid = self.licitacao_repo.find_by_pncp_id(pncp_id)
+            if not bid:
+                raise ValueError(f"Licitação com PNCP ID {pncp_id} não encontrada")
+            
+            # 🔧 CORREÇÃO: Obter configurações corretas do Supabase (priorizar SERVICE_KEY)
+            supabase_url = os.getenv('SUPABASE_URL')
+            supabase_key = os.getenv('SUPABASE_SERVICE_KEY')  # 🎯 USAR APENAS SERVICE_KEY
+            
+            # Fallback se SERVICE_KEY não existir (mas alertar)
+            if not supabase_key:
+                logger.warning("⚠️ SUPABASE_SERVICE_KEY não encontrada, usando ANON_KEY (pode causar erro 403)")
+                supabase_key = os.getenv('SUPABASE_ANON_KEY')
+            
+            if not supabase_url or not supabase_key:
+                raise ValueError("Configurações do Supabase não encontradas")
+            
+            logger.info(f"🔧 Usando Supabase URL: {supabase_url}")
+            logger.info(f"🔑 Tipo de chave: {'SERVICE_KEY' if os.getenv('SUPABASE_SERVICE_KEY') else 'ANON_KEY'}")
+            
+            # Instanciar o processador com configurações corretas
+            from config.database import db_manager
+            processor = UnifiedDocumentProcessor(db_manager, supabase_url, supabase_key)
+            
+            # Iniciar processamento
+            logger.info("📋 Iniciando processamento de documentos...")
+            
+            # 🔧 CORREÇÃO: Usar método síncrono de processamento
+            result = processor.processar_licitacao_sync(
+                licitacao_id=licitacao_id,
+                pncp_id=pncp_id,
+                bid=bid
+            )
+            
+            if result.get('success'):
+                logger.info(f"✅ Processamento concluído: {result.get('documentos_processados', 0)} documentos")
+                return {
+                    'success': True,
+                    'message': 'Preparação iniciada com sucesso',
+                    'details': {
+                        'licitacao_id': licitacao_id,
+                        'pncp_id': pncp_id,
+                        'documentos_processados': result.get('documentos_processados', 0),
+                        'documentos_total': result.get('documentos_total', 0),
+                        'tempo_processamento': result.get('tempo_processamento', 0)
+                    }
+                }, "Documentos preparados com sucesso"
+            else:
+                return {
+                    'success': False,
+                    'error': result.get('error', 'Erro no processamento'),
+                    'details': result
+                }, f"Erro na preparação: {result.get('error', 'Desconhecido')}"
+                
+        except Exception as e:
+            logger.error(f"❌ Erro na preparação: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }, f"Erro interno: {str(e)}"
+    
+    def get_preparation_status(self, licitacao_id: str) -> Tuple[Dict[str, Any], str]:
+        """
+        Verificar status da preparação de documentos de uma licitação
+        """
+        try:
+            # Importar aqui para evitar imports circulares
+            from core.unified_document_processor import UnifiedDocumentProcessor
+            import os
+            
+            logger.info(f"📊 Verificando status de preparação para licitacao_id: {licitacao_id}")
+            
+            # 🔧 CORREÇÃO: Obter configurações corretas do Supabase
+            supabase_url = os.getenv('SUPABASE_URL')
+            supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
+            
+            if not supabase_key:
+                logger.warning("⚠️ SUPABASE_SERVICE_KEY não encontrada, usando ANON_KEY")
+                supabase_key = os.getenv('SUPABASE_ANON_KEY')
+            
+            if not supabase_url or not supabase_key:
+                raise ValueError("Configurações do Supabase não encontradas")
+            
+            # Instanciar o processador
+            from config.database import db_manager
+            processor = UnifiedDocumentProcessor(db_manager, supabase_url, supabase_key)
+            
+            # 🔧 CORREÇÃO: Verificar status real dos documentos
+            try:
+                # Verificar documentos no banco de dados
+                with db_manager.get_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            SELECT COUNT(*) as total_docs,
+                                   COUNT(CASE WHEN arquivo_nuvem_url IS NOT NULL THEN 1 END) as docs_processados,
+                                   COUNT(CASE WHEN texto_preview IS NOT NULL THEN 1 END) as docs_com_texto
+                            FROM documentos_licitacao 
+                            WHERE licitacao_id = %s
+                        """, (licitacao_id,))
+                        
+                        result = cursor.fetchone()
+                        total_docs = result[0] if result else 0
+                        docs_processados = result[1] if result else 0
+                        docs_com_texto = result[2] if result else 0
+                
+                # Determinar status baseado nos resultados
+                if total_docs == 0:
+                    status = 'not_started'
+                    status_message = 'Nenhum documento encontrado'
+                    progress = 0
+                elif docs_processados == 0:
+                    status = 'processing'
+                    status_message = 'Iniciando processamento de documentos...'
+                    progress = 5
+                elif docs_processados < total_docs:
+                    status = 'processing'
+                    progress = int((docs_processados / total_docs) * 80)  # Até 80% para processamento
+                    status_message = f'Processando documentos ({docs_processados}/{total_docs})'
+                elif docs_com_texto < docs_processados:
+                    status = 'processing'
+                    progress = 85
+                    status_message = 'Extraindo texto dos documentos...'
+                else:
+                    status = 'ready'
+                    progress = 100
+                    status_message = 'Preparação concluída com sucesso'
+                
+                logger.info(f"📊 Status calculado: {status} ({progress}%) - {total_docs} docs, {docs_processados} processados")
+                
+                return {
+                    'success': True,
+                    'licitacao_id': licitacao_id,
+                    'status': status,
+                    'progress': progress,
+                    'message': status_message,
+                    'details': {
+                        'total_documents': total_docs,
+                        'processed_documents': docs_processados,
+                        'documents_with_text': docs_com_texto,
+                        'estimated_completion_time': None  # TODO: implementar se necessário
+                    }
+                }, status_message
+                
+            except Exception as db_error:
+                logger.error(f"❌ Erro ao consultar banco: {db_error}")
+                return {
+                    'success': False,
+                    'licitacao_id': licitacao_id,
+                    'status': 'error',
+                    'progress': 0,
+                    'message': 'Erro ao verificar status no banco de dados',
+                    'error': str(db_error)
+                }, f"Erro de banco: {str(db_error)}"
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao verificar status: {e}")
+            return {
+                'success': False,
+                'licitacao_id': licitacao_id,
+                'status': 'error',
+                'progress': 0,
+                'message': 'Erro interno ao verificar status',
+                'error': str(e)
+            }, f"Erro interno: {str(e)}"
+    
+    def cleanup_failed_preparation(self, licitacao_id: str) -> Tuple[Dict[str, Any], str]:
+        """
+        Limpar preparação que falhou, permitindo nova tentativa
+        """
+        try:
+            from core.unified_document_processor import UnifiedDocumentProcessor
+            import os
+            
+            logger.info(f"🧹 Limpando preparação falhada para {licitacao_id}")
+            
+            # Obter configurações do Supabase
+            supabase_url = os.getenv('SUPABASE_URL')
+            supabase_key = os.getenv('SUPABASE_SERVICE_KEY', os.getenv('SUPABASE_ANON_KEY'))
+            
+            if not supabase_url or not supabase_key:
+                raise ValueError("Configurações do Supabase não encontradas")
+            
+            # Instanciar o processador
+            from config.database import db_manager
+            processor = UnifiedDocumentProcessor(db_manager, supabase_url, supabase_key)
+            result = processor.cleanup_failed_processing(licitacao_id)
+            
+            return {
+                'licitacao_id': licitacao_id,
+                'cleanup_status': 'success',
+                'files_removed': result.get('files_removed', 0)
+            }, "Limpeza concluída, nova preparação pode ser iniciada"
+            
+        except Exception as e:
+            logger.error(f"❌ Erro na limpeza para {licitacao_id}: {str(e)}")
+            return {
+                'licitacao_id': licitacao_id,
+                'cleanup_status': 'error',
+                'error': str(e)
+            }, f"Erro na limpeza: {str(e)}" 

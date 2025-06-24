@@ -76,6 +76,21 @@ def create_rag_routes(rag_service):
             return '', 204
         return rag_controller.reprocessar_documentos()
     
+    @rag_bp.route('/vectorize', methods=['POST', 'OPTIONS'])
+    def vectorize_documents():
+        """
+        Endpoint para vetorização de documentos (usado na preparação automática)
+        
+        Body JSON:
+        {
+            "licitacao_id": "uuid"
+        }
+        """
+        if request.method == 'OPTIONS':
+            return '', 204
+            
+        return rag_controller.vectorize_documents()
+    
     return rag_bp
 
 def create_rag_routes_lazy():
@@ -145,5 +160,23 @@ def create_rag_routes_lazy():
         if rag_controller is None:
             return rag_not_available()
         return rag_controller.reprocessar_documentos()
+    
+    @rag_bp.route('/vectorize', methods=['POST', 'OPTIONS'])
+    def vectorize_documents():
+        """
+        Endpoint para vetorização de documentos (usado na preparação automática)
+        
+        Body JSON:
+        {
+            "licitacao_id": "uuid"
+        }
+        """
+        if request.method == 'OPTIONS':
+            return '', 204
+            
+        rag_controller = get_rag_controller()
+        if rag_controller is None:
+            return rag_not_available()
+        return rag_controller.vectorize_documents()
     
     return rag_bp 

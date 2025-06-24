@@ -46,22 +46,37 @@ def get_all_companies_from_db() -> List[Dict[str, Any]]:
         with conn.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute("""
                 SELECT id, nome_fantasia, razao_social, cnpj, 
-                       descricao_servicos_produtos, palavras_chave, setor_atuacao
+                       descricao_servicos_produtos, setor_atuacao, produtos
                 FROM empresas
                 ORDER BY nome_fantasia
             """)
             companies = []
             for row in cursor.fetchall():
+                # 🔀 CORREÇÃO: Parse correto do campo produtos (JSON -> Lista Python)
+                produtos = row['produtos']
+                if isinstance(produtos, str):
+                    try:
+                        import json
+                        produtos = json.loads(produtos)
+                    except (json.JSONDecodeError, TypeError):
+                        produtos = []
+                elif produtos is None:
+                    produtos = []
+                # Se já é uma lista (comportamento esperado do psycopg2 com jsonb), manter como está
+                
                 companies.append({
                     'id': str(row['id']),
                     'nome': row['nome_fantasia'],
                     'razao_social': row['razao_social'],
                     'cnpj': row['cnpj'],
                     'descricao_servicos_produtos': row['descricao_servicos_produtos'],
-                    'palavras_chave': row['palavras_chave'],
-                    'setor_atuacao': row['setor_atuacao']
+                    'setor_atuacao': row['setor_atuacao'],
+                    'produtos': produtos  # 🔀 Agora garantidamente uma lista Python
                 })
             return companies
+    except Exception as e:
+        logger.error(f"Erro ao buscar empresas: {e}")
+        return []
     finally:
         conn.close()
 

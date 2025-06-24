@@ -46,10 +46,11 @@ def process_daily_bids(vectorizer: BaseTextVectorizer, enable_llm_validation: bo
     cache_service = EmbeddingCacheService(db_manager)
     dedup_service = DeduplicationService(db_manager, cache_service)
     
-    # 🤖 Inicializar validador LLM
+    # 🤖 Inicializar validador LLM (Ollama + OpenAI fallback)
     llm_validator = None
     if enable_llm_validation:
-        llm_validator = LLMMatchValidator()
+        from config.llm_config import LLMConfig
+        llm_validator = LLMConfig.create_validator()
         print(f"🤖 Validador LLM configurado (threshold: {llm_validator.HIGH_SCORE_THRESHOLD:.1%})")
     
     # Data de hoje
@@ -139,7 +140,8 @@ def process_daily_bids(vectorizer: BaseTextVectorizer, enable_llm_validation: bo
         'matches_fase2': 0,
         'llm_validations_count': 0,
         'llm_approved': 0,
-        'llm_rejected': 0
+        'llm_rejected': 0,
+        'rejected_matches_logged': 0  # 🆕 Para tracking de matches rejeitados
     }
     
     # 🔥 PRÉ-CACHE: Buscar embeddings de todas as licitações em lote
@@ -202,20 +204,22 @@ def process_daily_bids(vectorizer: BaseTextVectorizer, enable_llm_validation: bo
             print(f"      🏢 {company['nome']}: Score = {score:.3f}")
             
             if score >= SIMILARITY_THRESHOLD_PHASE1:
-                # 🤖 VALIDAÇÃO LLM PARA SCORES ALTOS
-                should_accept_match = True
+                # 🔥 NOVA POLÍTICA: TODOS OS MATCHES PASSAM PELO LLM
+                should_accept_match = False  # Por padrão, rejeitar até LLM aprovar
                 final_score = score
                 final_justificativa = justificativa
                 
-                if llm_validator and llm_validator.should_validate_with_llm(score):
-                    print(f"         🤖 VALIDAÇÃO LLM (score {score:.1%} > {llm_validator.HIGH_SCORE_THRESHOLD:.1%})")
+                if llm_validator:
+                    print(f"         🤖 VALIDAÇÃO LLM OBRIGATÓRIA (score {score:.1%})")
                     
                     validation = llm_validator.validate_match(
                         empresa_nome=company['nome'],
                         empresa_descricao=company['descricao_servicos_produtos'],
+                        empresa_produtos=company.get('produtos'),
                         licitacao_objeto=objeto_compra,
                         pncp_id=pncp_id,
-                        similarity_score=score
+                        similarity_score=score,
+                        licitacao_itens=items
                     )
                     
                     estatisticas['llm_validations_count'] += 1
@@ -225,16 +229,29 @@ def process_daily_bids(vectorizer: BaseTextVectorizer, enable_llm_validation: bo
                         final_score = validation['confidence']
                         final_justificativa += f" | LLM: {validation['reasoning'][:100]}..."
                         estatisticas['llm_approved'] += 1
+                        should_accept_match = True  # ✅ APROVADO PELO LLM
                     else:
                         print(f"         🚫 LLM REJEITOU: {validation['reasoning'][:80]}...")
-                        should_accept_match = False
                         estatisticas['llm_rejected'] += 1
+                        should_accept_match = False  # ❌ REJEITADO PELO LLM
+                        
+                        # 📊 LOG de match rejeitado para análise
+                        _log_rejected_match(company, objeto_compra, pncp_id, score, validation['reasoning'])
+                        estatisticas['rejected_matches_logged'] += 1
+                else:
+                    # 🚨 FALLBACK: Se LLM indisponível, aplicar threshold mais rigoroso
+                    if score >= 0.85:  # Apenas scores muito altos sem LLM
+                        should_accept_match = True
+                        print(f"         ⚠️  LLM indisponível - aprovado por score alto ({score:.1%})")
+                    else:
+                        should_accept_match = False
+                        print(f"         ❌ LLM indisponível - rejeitado por score insuficiente ({score:.1%})")
                 
                 if should_accept_match:
                     potential_matches.append((company, final_score, final_justificativa))
-                    print(f"         ✅ POTENCIAL MATCH ACEITO!")
+                    print(f"         ✅ MATCH APROVADO PARA SALVAMENTO!")
                 else:
-                    print(f"         ❌ Rejeitado pela validação LLM")
+                    print(f"         ❌ Match rejeitado - NÃO será salvo no banco")
         
         if potential_matches:
             print(f"   🎯 {len(potential_matches)} potenciais matches encontrados!")
@@ -400,10 +417,11 @@ def reevaluate_existing_bids(vectorizer: BaseTextVectorizer, clear_matches: bool
     # 🔥 Cache apenas Redis local
     cache_service = EmbeddingCacheService(db_manager)
     
-    # 🤖 Inicializar validador LLM
+    # 🤖 Inicializar validador LLM (Ollama + OpenAI fallback)
     llm_validator = None
     if enable_llm_validation:
-        llm_validator = LLMMatchValidator()
+        from config.llm_config import LLMConfig
+        llm_validator = LLMConfig.create_validator()
         print(f"🤖 Validador LLM configurado (threshold: {llm_validator.HIGH_SCORE_THRESHOLD:.1%})")
     
     if clear_matches:
@@ -450,21 +468,28 @@ def reevaluate_existing_bids(vectorizer: BaseTextVectorizer, clear_matches: bool
         'vetorizacao_falhou': 0,
         'llm_validations_count': 0,
         'llm_approved': 0,
-        'llm_rejected': 0
+        'llm_rejected': 0,
+        'rejected_matches_logged': 0  # 🆕 Para tracking de matches rejeitados
     }
     
     for i, bid in enumerate(existing_bids, 1):
-        objeto_compra = bid['objeto_compra']
-        pncp_id = bid['pncp_id']
-        
+        pncp_id = bid["pncp_id"]
+        objeto_compra = bid.get("objeto_compra", "")
+        licitacao_id = bid.get("id") # ID da licitação no nosso DB
+
         print(f"\n[{i}/{len(existing_bids)}] 🔍 Reavaliando: {pncp_id}")
         print(f"   📝 Objeto: {objeto_compra[:100]}...")
-        
-        if not objeto_compra:
-            print("   ⚠️  Objeto da compra vazio, pulando...")
+
+        if not objeto_compra or not licitacao_id:
+            print("   ⚠️  Objeto da compra ou ID da licitação ausente, pulando...")
             continue
         
-        # 🔥 CACHE: Usar embedding do cache ou gerar novo
+        # 🔀 CORREÇÃO: Buscar os itens da licitação do nosso banco de dados
+        items = get_bid_items_from_db(licitacao_id)
+        if items:
+            print(f"   📋 {len(items)} itens encontrados no banco de dados para esta licitação.")
+
+        # CACHE: Usar embedding do cache ou gerar novo
         if objeto_compra in cached_bid_embeddings:
             bid_embedding = cached_bid_embeddings[objeto_compra]
             print(f"   ⚡ Embedding do cache Redis")
@@ -495,38 +520,57 @@ def reevaluate_existing_bids(vectorizer: BaseTextVectorizer, clear_matches: bool
             )
             
             if score >= SIMILARITY_THRESHOLD_PHASE1:
-                # 🤖 VALIDAÇÃO LLM PARA SCORES ALTOS
-                should_accept_match = True
+                # 🔥 NOVA POLÍTICA: TODOS OS MATCHES PASSAM PELO LLM
+                should_accept_match = False  # Por padrão, rejeitar até LLM aprovar
                 final_score = score
                 final_justificativa = justificativa
                 
-                if llm_validator and llm_validator.should_validate_with_llm(score):
+                if llm_validator:
+                    print(f"         🤖 VALIDAÇÃO LLM OBRIGATÓRIA (score {score:.1%})")
+                    
                     validation = llm_validator.validate_match(
                         empresa_nome=company['nome'],
                         empresa_descricao=company['descricao_servicos_produtos'],
+                        empresa_produtos=company.get('produtos'),
                         licitacao_objeto=objeto_compra,
                         pncp_id=pncp_id,
-                        similarity_score=score
+                        similarity_score=score,
+                        licitacao_itens=items
                     )
                     
                     estatisticas['llm_validations_count'] += 1
                     
                     if validation['is_valid']:
+                        print(f"         🎯 LLM APROVOU! Confiança: {validation['confidence']:.1%}")
                         final_score = validation['confidence']
                         final_justificativa += f" | LLM: {validation['reasoning'][:100]}..."
                         estatisticas['llm_approved'] += 1
+                        should_accept_match = True  # ✅ APROVADO PELO LLM
+                    else:
+                        print(f"         🚫 LLM REJEITOU: {validation['reasoning'][:80]}...")
+                        estatisticas['llm_rejected'] += 1
+                        should_accept_match = False  # ❌ REJEITADO PELO LLM
+                        
+                        # 📊 LOG de match rejeitado para análise
+                        _log_rejected_match(company, objeto_compra, pncp_id, score, validation['reasoning'])
+                        estatisticas['rejected_matches_logged'] += 1
+                else:
+                    # 🚨 FALLBACK: Se LLM indisponível, aplicar threshold mais rigoroso
+                    if score >= 0.85:  # Apenas scores muito altos sem LLM
+                        should_accept_match = True
+                        print(f"         ⚠️  LLM indisponível - aprovado por score alto ({score:.1%})")
                     else:
                         should_accept_match = False
-                        estatisticas['llm_rejected'] += 1
+                        print(f"         ❌ LLM indisponível - rejeitado por score insuficiente ({score:.1%})")
                 
                 if should_accept_match:
                     potential_matches.append((company, final_score, final_justificativa))
+                    print(f"         ✅ MATCH APROVADO PARA SALVAMENTO!")
+                else:
+                    print(f"         ❌ Match rejeitado - NÃO será salvo no banco")
         
         if potential_matches:
             estatisticas['com_matches'] += 1
-            
-            # Buscar itens da licitação
-            items = get_bid_items_from_db(bid['id'])
             
             # FASE 2: Refinamento com itens (se disponível)
             if items:
@@ -596,6 +640,8 @@ def _print_detailed_final_report(matches_encontrados: int, estatisticas: Dict[st
         print(f"   🤖 Validações LLM: {estatisticas['llm_validations_count']}")
         print(f"   ✅ LLM aprovados: {estatisticas['llm_approved']}")
         print(f"   ❌ LLM rejeitados: {estatisticas['llm_rejected']}")
+        if estatisticas.get('rejected_matches_logged', 0) > 0:
+            print(f"   📊 Matches rejeitados logados: {estatisticas['rejected_matches_logged']}")
         if estatisticas['llm_validations_count'] > 0:
             taxa_aprovacao_llm = (estatisticas['llm_approved'] / estatisticas['llm_validations_count']) * 100
             print(f"   📈 Taxa aprovação LLM: {taxa_aprovacao_llm:.1f}%")
@@ -610,9 +656,44 @@ def _print_detailed_final_report(matches_encontrados: int, estatisticas: Dict[st
     }
 
 
+def _log_rejected_match(company: Dict[str, Any], objeto_compra: str, pncp_id: str, score: float, reasoning: str):
+    """
+    📊 Log estruturado de matches rejeitados pelo LLM para análise futura
+    
+    Salva em arquivo de log para permitir análise de padrões e ajustes do sistema
+    """
+    import logging
+    import json
+    from datetime import datetime
+    
+    # Configurar logger específico para matches rejeitados
+    rejected_logger = logging.getLogger('rejected_matches')
+    if not rejected_logger.handlers:
+        handler = logging.FileHandler('logs/rejected_matches.log')
+        formatter = logging.Formatter('%(asctime)s - %(message)s')
+        handler.setFormatter(formatter)
+        rejected_logger.addHandler(handler)
+        rejected_logger.setLevel(logging.INFO)
+    
+    # Estrutura do log para análise
+    log_data = {
+        'timestamp': datetime.now().isoformat(),
+        'pncp_id': pncp_id,
+        'empresa_nome': company.get('nome', ''),
+        'empresa_descricao': company.get('descricao_servicos_produtos', '')[:200],  # Limitar tamanho
+        'licitacao_objeto': objeto_compra[:200],  # Limitar tamanho
+        'score_semantic': round(score, 4),
+        'llm_reasoning': reasoning[:300],  # Limitar tamanho
+        'rejection_type': 'llm_validation'
+    }
+    
+    rejected_logger.info(json.dumps(log_data, ensure_ascii=False))
+
+
 if __name__ == "__main__":
     print("=" * 80)
     print("🇧🇷 SISTEMA DE MATCHING BRASILEIRO - LICITAÇÕES PNCP")
+    print("🔥 NOVA VERSÃO: APENAS MATCHES APROVADOS PELO LLM SÃO SALVOS")
     print("=" * 80)
     
     # Menu de configuração do vectorizer

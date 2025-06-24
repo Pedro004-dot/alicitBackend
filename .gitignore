@@ -219,3 +219,4 @@ models/
 # 📊 HuggingFace cache específico
 .huggingface/
 transformers_cache/
+config.env.backup

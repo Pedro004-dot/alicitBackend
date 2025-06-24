@@ -47,9 +47,9 @@ class RetrievalEngine:
     
     def generate_response(self, query: str, context_chunks: List[Dict], 
                          licitacao_info: Optional[Dict] = None) -> Dict[str, Any]:
-        """Gera resposta usando OpenAI GPT-4"""
+        """Gera resposta usando OpenAI com fallback automático: gpt-4o-mini -> gpt-4o"""
         try:
-            logger.info("🤖 Gerando resposta com GPT-4...")
+            logger.info("🤖 Gerando resposta com OpenAI (4o-mini -> 4o fallback)...")
             
             # Construir contexto
             context_text = self._build_context(context_chunks, licitacao_info)
@@ -115,49 +115,90 @@ class RetrievalEngine:
             Responda de forma completa e estruturada, citando as fontes específicas do documento.
             """
             
-            # Fazer chamada para OpenAI
+            # 🎯 TENTATIVA 1: gpt-4o-mini (modelo primário)
             start_time = time.time()
+            model_used = "gpt-4o-mini"
             
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # Mais barato que gpt-4
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,  # Baixa para respostas mais determinísticas
-                max_tokens=1500
-            )
+            try:
+                logger.info("🚀 Tentando gpt-4o-mini (modelo primário)...")
+                response = self._make_openai_request(system_prompt, user_prompt, model_used)
+                logger.info("✅ gpt-4o-mini respondeu com sucesso!")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ gpt-4o-mini falhou: {e}")
+                logger.info("🔄 Fazendo fallback para gpt-4o...")
+                
+                # 🎯 TENTATIVA 2: gpt-4o (fallback)
+                model_used = "gpt-4o"
+                try:
+                    response = self._make_openai_request(system_prompt, user_prompt, model_used)
+                    logger.info("✅ gpt-4o (fallback) respondeu com sucesso!")
+                    
+                except Exception as e2:
+                    logger.error(f"❌ gpt-4o também falhou: {e2}")
+                    logger.info("🔄 Tentando gpt-3.5-turbo como último recurso...")
+                    
+                    # 🎯 TENTATIVA 3: gpt-3.5-turbo (último recurso)
+                    model_used = "gpt-3.5-turbo"
+                    response = self._make_openai_request(system_prompt, user_prompt, model_used)
+                    logger.info("✅ gpt-3.5-turbo (último recurso) respondeu!")
             
             response_time = time.time() - start_time
             
             # Extrair resposta
             answer = response.choices[0].message.content
             
-            # Calcular custos aproximados (preços de janeiro 2025)
+            # Calcular custos aproximados baseado no modelo usado
             input_tokens = len(user_prompt.split()) * 1.3  # Aproximação
             output_tokens = len(answer.split()) * 1.3
-            
-            # GPT-4o-mini: $0.00015/1K input, $0.0006/1K output
-            cost = (input_tokens * 0.00015 / 1000) + (output_tokens * 0.0006 / 1000)
+            cost = self._calculate_cost(model_used, input_tokens, output_tokens)
             
             result = {
                 'answer': answer,
                 'chunks_used': len(context_chunks),
                 'response_time': round(response_time, 2),
                 'cost_usd': round(cost, 6),
-                'model': "gpt-4o-mini",
+                'model': model_used,
                 'sources': self._extract_sources(context_chunks)
             }
             
-            logger.info(f"✅ Resposta gerada em {response_time:.2f}s")
+            logger.info(f"✅ Resposta gerada em {response_time:.2f}s usando {model_used}")
             return result
             
         except Exception as e:
-            logger.error(f"❌ Erro ao gerar resposta: {e}")
+            logger.error(f"❌ Todos os modelos falharam: {e}")
             return {
                 'answer': f"Erro ao gerar resposta: {str(e)}",
                 'error': True
             }
+    
+    def _make_openai_request(self, system_prompt: str, user_prompt: str, model: str):
+        """Faz requisição para OpenAI com modelo específico"""
+        return self.openai_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,  # Baixa para respostas mais determinísticas
+            max_tokens=1500
+        )
+    
+    def _calculate_cost(self, model: str, input_tokens: float, output_tokens: float) -> float:
+        """Calcula custo baseado no modelo usado"""
+        # Preços por 1K tokens (janeiro 2025)
+        pricing = {
+            "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
+            "gpt-4o": {"input": 0.005, "output": 0.015},
+            "gpt-3.5-turbo": {"input": 0.0015, "output": 0.002}
+        }
+        
+        if model in pricing:
+            rates = pricing[model]
+            return (input_tokens * rates["input"] / 1000) + (output_tokens * rates["output"] / 1000)
+        else:
+            # Fallback para gpt-3.5-turbo pricing
+            return (input_tokens * 0.0015 / 1000) + (output_tokens * 0.002 / 1000)
     
     def _build_context(self, chunks: List[Dict], licitacao_info: Optional[Dict] = None) -> str:
         """Constrói contexto para o LLM"""

@@ -612,7 +612,7 @@ class BidController:
     def get_enhanced_statistics(self) -> Tuple[Dict[str, Any], int]:
         """
         GET /api/bids/enhanced-statistics
-        Estatísticas aprimoradas usando os novos campos das APIs
+        Estatísticas de negócio com análises estratégicas
         """
         try:
             stats, message = self.bid_service.get_enhanced_statistics()
@@ -621,16 +621,143 @@ class BidController:
                 'success': True,
                 'data': stats,
                 'message': message,
-                'report_type': 'enhanced_statistics',
-                'description': 'Estatísticas aprimoradas com insights de negócio'
+                'insights': {
+                    'description': 'Análises estratégicas para tomada de decisão',
+                    'generated_at': stats.get('generated_at', None)
+                }
             }), 200
             
         except Exception as e:
-            logger.error(f"Erro no controller ao calcular estatísticas aprimoradas: {str(e)}")
+            logger.error(f"Erro no controller ao buscar estatísticas estratégicas: {str(e)}")
             return jsonify({
                 'success': False,
                 'error': str(e),
-                'message': 'Erro ao calcular estatísticas aprimoradas'
+                'message': 'Erro ao buscar estatísticas estratégicas'
+            }), 500
+
+    # ===== NOVOS ENDPOINTS PARA PREPARAÇÃO AUTOMÁTICA DE ANÁLISE =====
+    
+    @log_endpoint_access
+    def prepare_analysis(self) -> Tuple[Dict[str, Any], int]:
+        """
+        POST /api/bids/prepare-analysis - Iniciar preparação automática de análise
+        """
+        try:
+            data = request.get_json()
+            
+            if not data:
+                return jsonify({
+                    'success': False,
+                    'error': 'JSON payload obrigatório'
+                }), 400
+            
+            licitacao_id = data.get('licitacao_id')
+            pncp_id = data.get('pncp_id')
+            
+            if not licitacao_id or not pncp_id:
+                return jsonify({
+                    'success': False,
+                    'error': 'Parâmetros licitacao_id e pncp_id são obrigatórios'
+                }), 400
+            
+            logger.info(f"🚀 Controller: Iniciando preparação para {licitacao_id}")
+            
+            result, message = self.bid_service.start_document_preparation(licitacao_id, pncp_id)
+            
+            if result.get('status') == 'error':
+                return jsonify({
+                    'success': False,
+                    'error': result.get('error'),
+                    'message': message
+                }), 500
+            
+            return jsonify({
+                'success': True,
+                'data': result,
+                'message': message
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no controller prepare_analysis: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f'Erro interno: {str(e)}'
+            }), 500
+    
+    @log_endpoint_access  
+    def get_preparation_status(self) -> Tuple[Dict[str, Any], int]:
+        """
+        GET /api/bids/preparation-status?licitacao_id=<id> - Verificar status de preparação
+        """
+        try:
+            licitacao_id = request.args.get('licitacao_id')
+            
+            if not licitacao_id:
+                return jsonify({
+                    'success': False,
+                    'error': 'Parâmetro licitacao_id é obrigatório'
+                }), 400
+            
+            logger.info(f"📊 Controller: Verificando status para {licitacao_id}")
+            
+            result, message = self.bid_service.get_preparation_status(licitacao_id)
+            
+            if result.get('status') == 'error':
+                return jsonify({
+                    'success': False,
+                    'error': result.get('error'),
+                    'message': message
+                }), 500
+            
+            return jsonify({
+                'success': True,
+                'data': result,
+                'message': message
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no controller get_preparation_status: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f'Erro interno: {str(e)}'
+            }), 500
+    
+    @log_endpoint_access
+    def cleanup_preparation(self) -> Tuple[Dict[str, Any], int]:
+        """
+        DELETE /api/bids/cleanup-preparation?licitacao_id=<id> - Limpar preparação falhada
+        """
+        try:
+            licitacao_id = request.args.get('licitacao_id')
+            
+            if not licitacao_id:
+                return jsonify({
+                    'success': False,
+                    'error': 'Parâmetro licitacao_id é obrigatório'
+                }), 400
+            
+            logger.info(f"🧹 Controller: Limpando preparação para {licitacao_id}")
+            
+            result, message = self.bid_service.cleanup_failed_preparation(licitacao_id)
+            
+            if result.get('cleanup_status') == 'error':
+                return jsonify({
+                    'success': False,
+                    'error': result.get('error'),
+                    'message': message
+                }), 500
+            
+            return jsonify({
+                'success': True,
+                'data': result,
+                'message': message
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no controller cleanup_preparation: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f'Erro interno: {str(e)}'
             }), 500
     
     @log_endpoint_access

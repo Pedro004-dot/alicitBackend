@@ -58,38 +58,38 @@ class CompanyRepository(BaseRepository):
         
         return self.execute_custom_query(query, tuple(params))
     
-    def search_by_keywords(self, keywords: List[str], limit: int = 50, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Buscar empresas por palavras-chave nos serviços/produtos"""
-        if not keywords:
+    def search_by_products(self, products: List[str], limit: int = 50, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Buscar empresas por produtos/serviços"""
+        if not products:
             return []
         
-        # Construir condições para cada palavra-chave
-        keyword_conditions = []
+        # Construir condições para cada produto/serviço
+        product_conditions = []
         params = []
         
-        for keyword in keywords:
-            keyword_pattern = f"%{keyword}%"
-            keyword_conditions.append("""
+        for product in products:
+            product_pattern = f"%{product}%"
+            product_conditions.append("""
                 (descricao_servicos_produtos ILIKE %s 
-                 OR palavras_chave::text ILIKE %s
+                 OR produtos::text ILIKE %s
                  OR setor_atuacao ILIKE %s)
             """)
-            params.extend([keyword_pattern, keyword_pattern, keyword_pattern])
+            params.extend([product_pattern, product_pattern, product_pattern])
         
         base_query = f"""
             SELECT *, 
                    (CASE 
-                    WHEN nome_fantasia ILIKE ANY(ARRAY[{','.join(['%s'] * len(keywords))}]) THEN 3
-                    WHEN descricao_servicos_produtos ILIKE ANY(ARRAY[{','.join(['%s'] * len(keywords))}]) THEN 2
+                    WHEN nome_fantasia ILIKE ANY(ARRAY[{','.join(['%s'] * len(products))}]) THEN 3
+                    WHEN descricao_servicos_produtos ILIKE ANY(ARRAY[{','.join(['%s'] * len(products))}]) THEN 2
                     ELSE 1
                    END) as relevance_score
             FROM empresas 
-            WHERE {' OR '.join(keyword_conditions)}
+            WHERE {' OR '.join(product_conditions)}
         """
         
-        # Adicionar keywords para os ARRAY[]
-        keyword_patterns = [f"%{kw}%" for kw in keywords]
-        all_params = keyword_patterns + keyword_patterns + params
+        # Adicionar produtos para os ARRAY[]
+        product_patterns = [f"%{prod}%" for prod in products]
+        all_params = product_patterns + product_patterns + params
         
         # Adicionar filtro de usuário se fornecido
         if user_id:
@@ -157,14 +157,14 @@ class CompanyRepository(BaseRepository):
             'setores_principais': []
         }
     
-    def get_companies_with_keywords_count(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Obter empresas com quantidade de palavras-chave"""
+    def get_companies_with_products_count(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Obter empresas com quantidade de produtos/serviços"""
         base_query = """
             SELECT id, nome_fantasia, razao_social,
                    CASE 
-                       WHEN palavras_chave IS NULL THEN 0
-                       ELSE jsonb_array_length(palavras_chave)
-                   END as total_keywords
+                       WHEN produtos IS NULL THEN 0
+                       ELSE jsonb_array_length(produtos)
+                   END as total_products
             FROM empresas
         """
         
@@ -173,14 +173,14 @@ class CompanyRepository(BaseRepository):
             base_query += " WHERE user_id = %s"
             params.append(user_id)
             
-        query = base_query + " ORDER BY total_keywords DESC, nome_fantasia"
+        query = base_query + " ORDER BY total_products DESC, nome_fantasia"
         
         return self.execute_custom_query(query, tuple(params))
     
-    def update_keywords(self, company_id: str, keywords: List[str]) -> Optional[Dict[str, Any]]:
-        """Atualizar palavras-chave de uma empresa"""
+    def update_products(self, company_id: str, products: List[str]) -> Optional[Dict[str, Any]]:
+        """Atualizar produtos/serviços de uma empresa"""
         import json
-        return self.update(company_id, {'palavras_chave': json.dumps(keywords)})
+        return self.update(company_id, {'produtos': json.dumps(products)})
     
     def bulk_create(self, companies_data: List[Dict[str, Any]]) -> List[str]:
         """Criar múltiplas empresas em uma transação"""

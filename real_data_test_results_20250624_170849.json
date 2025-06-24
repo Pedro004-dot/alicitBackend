@@ -1,0 +1,162 @@
+{
+  "llama3.2:latest": {
+    "total_time": 11.645549774169922,
+    "successful_tests": 6,
+    "failed_tests": 0,
+    "correct_decisions": 1,
+    "test_details": [
+      {
+        "scenario_name": "Match Realista - Materiais de Escritório",
+        "empresa_nome": "Materias de escritorio",
+        "licitacao_id": "00930799000115-1-000012/2025",
+        "expected": true,
+        "decision": false,
+        "confidence": 0.5,
+        "processing_time": 3.154453992843628,
+        "is_correct": false,
+        "justificativa": "A empresa Materias de escritório atua apenas com itens relacionados a escritório, como escritorios, canetas, papel e copos, mas não tem produtos ou serviços relacionados a veículos utilitários, micro-ônibus ou vans.",
+        "scenario_justificativa": "Empresa de materiais pode fornecer equipamentos correlatos"
+      },
+      {
+        "scenario_name": "Match Impossível - Tech vs Equipamento Físico",
+        "empresa_nome": "AgroFrare",
+        "licitacao_id": "01612516000150-1-000047/2025",
+        "expected": false,
+        "decision": true,
+        "confidence": 1.0,
+        "processing_time": 2.3239359855651855,
+        "is_correct": false,
+        "justificativa": "A empresa AgroFrare atua no agronegócio e oferece produtos e serviços relacionados à distribuição de insumos agrícolas, incluindo biológicos e fertilizantes foliares, o que é compatível com a licitação para pavimentação asfáltica. Além disso, sua área de atuação é compatível com o objetivo da licitação, pois não há indicação de que a empresa não possa atender à demanda.",
+        "scenario_justificativa": "Empresa de software não fornece equipamentos físicos"
+      },
+      {
+        "scenario_name": "Match Questionável - Agro vs Outros Setores",
+        "empresa_nome": "AgroFrare",
+        "licitacao_id": "18715383000140-1-001241/2024",
+        "expected": false,
+        "decision": true,
+        "confidence": 1.0,
+        "processing_time": 1.3358428478240967,
+        "is_correct": false,
+        "justificativa": "A empresa AgroFrare atua no agronegócio e oferece produtos e serviços relacionados à manutenção em propriedades municipais, como adubos e assistência técnica qualificada.",
+        "scenario_justificativa": "Empresa agro especializada não atende demandas de outros setores"
+      },
+      {
+        "scenario_name": "Match Correlato - Limpeza vs Demanda Geral",
+        "empresa_nome": "Coleta de lixo",
+        "licitacao_id": "18715383000140-1-001241/2024",
+        "expected": false,
+        "decision": true,
+        "confidence": 1.0,
+        "processing_time": 2.1987009048461914,
+        "is_correct": false,
+        "justificativa": "A empresa oferece produtos e serviços relacionados aos itens da licitação, como caminhões compactador de lixo urbano, varredeira mecanica e lixeiras públicas, que são necessários para a coleta de lixo e varria pública. Além disso, a área de atuação é compatível com o objetivo da licitação, pois a empresa trabalha na coleta de lixo e varria pública. Portanto, é razoável que esta empresa possa atender esta demanda.",
+        "scenario_justificativa": "Serviços de limpeza não atendem demandas específicas de equipamentos"
+      },
+      {
+        "scenario_name": "Cenário Real 1 - Clonex... vs Licitação",
+        "empresa_nome": "Clonex",
+        "licitacao_id": "92406115000107-1-000051/2025",
+        "expected": false,
+        "decision": false,
+        "confidence": 0.33,
+        "processing_time": 1.2092070579528809,
+        "is_correct": true,
+        "justificativa": "A empresa Clonex é especializada em desenvolvimento de software e inteligência artificial, mas não oferece produtos ou serviços relacionados a veículos ou equipamentos para uso oficial.",
+        "scenario_justificativa": "Análise de palavras-chave (overlap: 1)"
+      },
+      {
+        "scenario_name": "Cenário Real 2 - Clonex... vs Licitação",
+        "empresa_nome": "Clonex",
+        "licitacao_id": "87849923000109-1-000457/2024",
+        "expected": true,
+        "decision": false,
+        "confidence": 0.5,
+        "processing_time": 1.4234089851379395,
+        "is_correct": false,
+        "justificativa": "A empresa Clonex é especializada em soluções baseadas em inteligência artificial e software, o que não está diretamente relacionado com a aquisição de materiais para manutenção de ônibus e táxis.",
+        "scenario_justificativa": "Análise de palavras-chave (overlap: 3)"
+      }
+    ]
+  },
+  "qwen2.5:7b": {
+    "total_time": 34.42023253440857,
+    "successful_tests": 6,
+    "failed_tests": 0,
+    "correct_decisions": 4,
+    "test_details": [
+      {
+        "scenario_name": "Match Realista - Materiais de Escritório",
+        "empresa_nome": "Materias de escritorio",
+        "licitacao_id": "00930799000115-1-000012/2025",
+        "expected": true,
+        "decision": false,
+        "confidence": 0.0,
+        "processing_time": 8.564249277114868,
+        "is_correct": false,
+        "justificativa": "A análise rigorosa de compatibilidade comercial indica que a empresa Materias de Escritório não é diretamente compatível com os itens licitados, pois o objeto da licitação busca veículos utilitários (pickup, micro-ônibus e vans) para uso corporativo, enquanto a empresa se dedica ao varejo e distribuição de itens de escritório. Embora haja uma pontuação semântica positiva de 75%, esta não é suficiente para justificar a aprovação, pois a natureza dos produtos e serviços oferecidos pela empresa não corresponde aos requisitos da licitação.",
+        "scenario_justificativa": "Empresa de materiais pode fornecer equipamentos correlatos"
+      },
+      {
+        "scenario_name": "Match Impossível - Tech vs Equipamento Físico",
+        "empresa_nome": "AgroFrare",
+        "licitacao_id": "01612516000150-1-000047/2025",
+        "expected": false,
+        "decision": false,
+        "confidence": 0.0,
+        "processing_time": 6.26372504234314,
+        "is_correct": true,
+        "justificativa": "A análise semântica indica uma compatibilidade de 75%, o que sugere uma correspondência significativa, mas não clara e direta com os itens licitados. A AgroFrare se dedica a soluções agrícolas como biológicos, adubos, assistência técnica e foliar, enquanto a licitação busca empresas especializadas em pavimentação asfáltica e infraestrutura viária. Embora haja uma certa semelhança no sentido de que ambas são contratações para melhorias na área rural, a natureza dos serviços é fundamentalmente diferente. Portanto, não há correspondência clara e direta entre os produtos/serviços oferecidos pela AgroFrare e o objeto da licitação.",
+        "scenario_justificativa": "Empresa de software não fornece equipamentos físicos"
+      },
+      {
+        "scenario_name": "Match Questionável - Agro vs Outros Setores",
+        "empresa_nome": "AgroFrare",
+        "licitacao_id": "18715383000140-1-001241/2024",
+        "expected": false,
+        "decision": false,
+        "confidence": 0.0,
+        "processing_time": 5.603819131851196,
+        "is_correct": true,
+        "justificativa": "A análise semântica indica uma compatibilidade de 75%, o que sugere um bom ajuste entre os serviços oferecidos pela AgroFrare e os itens especificados na licitação. No entanto, a licitação busca serviços técnicos profissionais de engenharia para a execução e acompanhamento da elaboração dos projetos básicos e executivos, bem como a execução das obras para a construção de edificações. Os produtos e serviços oferecidos pela AgroFrare, como biológicos, adubos, assistência técnica e foliar, não estão diretamente relacionados ao objeto da licitação. Portanto, há uma discrepância significativa entre o que é solicitado e o que a empresa pode fornecer.",
+        "scenario_justificativa": "Empresa agro especializada não atende demandas de outros setores"
+      },
+      {
+        "scenario_name": "Match Correlato - Limpeza vs Demanda Geral",
+        "empresa_nome": "Coleta de lixo",
+        "licitacao_id": "18715383000140-1-001241/2024",
+        "expected": false,
+        "decision": false,
+        "confidence": 0.75,
+        "processing_time": 4.684315919876099,
+        "is_correct": true,
+        "justificativa": "A análise semântica indica um score de 75.0%, o que sugere uma certa compatibilidade, mas a empresa 'Coleta de lixo' não apresenta produtos ou serviços diretamente relacionados aos itens especificados na licitação. A licitação busca manutenção em próprios municipais, enquanto os serviços da empresa são voltados para coleta e varrição pública. Embora haja uma ligação lógica entre a prestação de serviços públicos, não há correspondência clara e direta aos itens licitados.",
+        "scenario_justificativa": "Serviços de limpeza não atendem demandas específicas de equipamentos"
+      },
+      {
+        "scenario_name": "Cenário Real 1 - Clonex... vs Licitação",
+        "empresa_nome": "Clonex",
+        "licitacao_id": "92406115000107-1-000051/2025",
+        "expected": false,
+        "decision": false,
+        "confidence": 0.75,
+        "processing_time": 4.969278812408447,
+        "is_correct": true,
+        "justificativa": "A empresa Clonex se dedica ao desenvolvimento de software e não possui produtos ou serviços relacionados a veículos automotores, como SUVs. Embora o score semântico seja alto (75%), indicando uma boa correspondência entre as palavras-chave da empresa e os itens licitados, a natureza dos produtos/serviços oferecidos pela Clonex não se alinha com o objeto da licitação, que busca veículos do tipo SUV. Portanto, há dúvida significativa sobre a capacidade técnica e comercial da empresa de atender aos requisitos específicos da licitação.",
+        "scenario_justificativa": "Análise de palavras-chave (overlap: 1)"
+      },
+      {
+        "scenario_name": "Cenário Real 2 - Clonex... vs Licitação",
+        "empresa_nome": "Clonex",
+        "licitacao_id": "87849923000109-1-000457/2024",
+        "expected": true,
+        "decision": false,
+        "confidence": 0.75,
+        "processing_time": 4.334844350814819,
+        "is_correct": false,
+        "justificativa": "A análise semântica indica uma compatibilidade de 75%, mas os itens especificados na licitação (CAIBRO, COLUNA DE MADEIRA, FOLHA DE ZINCO) não correspondem diretamente aos produtos ou serviços oferecidos pela Clonex, que se especializa em inteligência artificial e soluções software. Portanto, há dúvida significativa sobre a capacidade técnica e comercial da empresa para atender às necessidades específicas da licitação.",
+        "scenario_justificativa": "Análise de palavras-chave (overlap: 3)"
+      }
+    ]
+  }
+}

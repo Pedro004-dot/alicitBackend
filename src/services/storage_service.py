@@ -91,11 +91,12 @@ class StorageService:
             True se sucesso, False se erro
         """
         try:
-            # Headers baseados na documentação oficial do Supabase
+            # 🔧 CORREÇÃO: Headers corrigidos para SERVICE_KEY (não ANON_KEY)
             headers = {
                 'Authorization': f'Bearer {self.supabase_key}',
                 'Content-Type': content_type,
-                'apikey': self.supabase_key  # Header adicional requerido pela API
+                'apikey': self.supabase_key,  # Header adicional requerido
+                'X-Client-Info': 'alicit-backend/1.0'  # Identificação do cliente
             }
             
             # URL conforme documentação oficial
@@ -104,6 +105,7 @@ class StorageService:
             logger.info(f"🔄 Tentando upload: {url}")
             logger.info(f"📝 Content-Type: {content_type}")
             logger.info(f"📏 Size: {len(file_content)} bytes")
+            logger.info(f"🔑 Usando chave: {self.supabase_key[:20]}... (tipo: {'SERVICE' if self.supabase_key.count('.') > 1 else 'ANON'})")
             
             # Primeira tentativa: POST para novo arquivo
             response = requests.post(
@@ -136,9 +138,20 @@ class StorageService:
                     return False
                     
             elif response.status_code == 403:
-                # Erro de permissão, tentar com ANON_KEY se estamos usando SERVICE_KEY
-                logger.warning(f"⚠️ Erro 403 com SERVICE_KEY, isso pode indicar problema de configuração")
-                logger.error(f"❌ Resposta: {response.text}")
+                # 🔧 CORREÇÃO: Tratar erro 403 com mais detalhes
+                logger.error(f"❌ ERRO 403 - Problema de autorização:")
+                logger.error(f"   📝 Resposta completa: {response.text}")
+                logger.error(f"   🔑 Chave usada: {self.supabase_key[:30]}...")
+                logger.error(f"   📦 Bucket: {self.bucket_name}")
+                logger.error(f"   📂 Path: {destination_path}")
+                logger.error(f"   🌐 URL Supabase: {self.supabase_url}")
+                
+                # Verificar se a chave tem formato correto
+                if not self.supabase_key.startswith('eyJ'):
+                    logger.error("❌ Chave Supabase não tem formato JWT válido")
+                elif self.supabase_key.count('.') < 2:
+                    logger.error("❌ Chave pode ser ANON_KEY - precisa de SERVICE_KEY para uploads")
+                
                 return False
                 
             else:

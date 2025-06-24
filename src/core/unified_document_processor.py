@@ -1475,125 +1475,337 @@ class UnifiedDocumentProcessor:
     
     def testar_extrator_texto(self, licitacao_id: str = None) -> Dict[str, Any]:
         """
-        🧪 NOVA FUNÇÃO: Testa o extrator de texto avançado em documentos existentes
+        🧪 Testar funcionalidade do extrator de texto avançado
         """
         try:
-            logger.info("🧪 Testando extrator de texto avançado...")
+            logger.info("🧪 Iniciando teste do extrator de texto avançado")
             
-            # Obter status do extrator
-            extractor_status = self.text_extractor.get_extractor_status()
-            logger.info(f"📊 Status do extrator: {extractor_status}")
-            
-            # Buscar documentos para teste
-            with self.db_manager.get_connection() as conn:
-                with conn.cursor(cursor_factory=DictCursor) as cursor:
-                    if licitacao_id:
-                        query = """
-                            SELECT id, licitacao_id, titulo, arquivo_nuvem_url, 
-                                   tamanho_arquivo, metadata_arquivo
-                            FROM documentos_licitacao 
-                            WHERE licitacao_id = %s AND tipo_arquivo = 'application/pdf'
-                            LIMIT 3
-                        """
-                        cursor.execute(query, (licitacao_id,))
-                    else:
-                        query = """
-                            SELECT id, licitacao_id, titulo, arquivo_nuvem_url, 
-                                   tamanho_arquivo, metadata_arquivo
-                            FROM documentos_licitacao 
-                            WHERE tipo_arquivo = 'application/pdf'
-                            ORDER BY created_at DESC
-                            LIMIT 3
-                        """
-                        cursor.execute(query)
-                    
-                    documentos = cursor.fetchall()
-            
-            if not documentos:
-                return {
-                    'success': False,
-                    'error': 'Nenhum documento PDF encontrado para teste',
-                    'extractor_status': extractor_status
-                }
-            
-            logger.info(f"📄 Testando {len(documentos)} documentos...")
-            
-            resultados = []
-            
-            for doc in documentos:
-                try:
-                    logger.info(f"🔄 Testando: {doc['titulo']}")
-                    
-                    # Baixar arquivo
-                    response = requests.get(doc['arquivo_nuvem_url'], timeout=60)
-                    response.raise_for_status()
-                    pdf_content = response.content
-                    
-                    logger.info(f"📥 Arquivo baixado: {len(pdf_content)} bytes")
-                    
-                    # Testar extração
-                    extraction_result = self.text_extractor.extract_text_from_bytes(
-                        pdf_content, 
-                        doc['titulo']
-                    )
-                    
-                    # Compilar resultado do teste
-                    teste_resultado = {
-                        'documento_id': doc['id'],
-                        'titulo': doc['titulo'],
-                        'arquivo_url': doc['arquivo_nuvem_url'],
-                        'tamanho_original': doc['tamanho_arquivo'],
-                        'tamanho_baixado': len(pdf_content),
-                        'extraction_result': extraction_result
-                    }
-                    
-                    if extraction_result['success']:
-                        logger.info(f"✅ Sucesso: {extraction_result['extractor_used']} - {extraction_result['char_count']} chars")
-                    else:
-                        logger.error(f"❌ Falha: {extraction_result.get('error', 'Erro desconhecido')}")
-                    
-                    resultados.append(teste_resultado)
-                    
-                except Exception as e:
-                    logger.error(f"❌ Erro ao testar documento {doc['titulo']}: {e}")
-                    resultados.append({
-                        'documento_id': doc['id'],
-                        'titulo': doc['titulo'],
-                        'error': str(e),
-                        'extraction_result': {'success': False, 'error': str(e)}
-                    })
-            
-            # Compilar estatísticas
-            sucessos = sum(1 for r in resultados if r['extraction_result']['success'])
-            total = len(resultados)
-            
-            estatisticas = {
-                'total_testado': total,
-                'sucessos': sucessos,
-                'falhas': total - sucessos,
-                'taxa_sucesso': (sucessos / total * 100) if total > 0 else 0,
-                'extractors_usados': {}
-            }
-            
-            # Contar uso de extractors
-            for resultado in resultados:
-                if resultado['extraction_result']['success']:
-                    extractor = resultado['extraction_result']['extractor_used']
-                    estatisticas['extractors_usados'][extractor] = estatisticas['extractors_usados'].get(extractor, 0) + 1
-            
-            logger.info(f"🎉 Teste concluído: {sucessos}/{total} sucessos ({estatisticas['taxa_sucesso']:.1f}%)")
-            
-            return {
+            resultado = {
                 'success': True,
-                'extractor_status': extractor_status,
-                'estatisticas': estatisticas,
-                'resultados_detalhados': resultados
+                'extrator_status': self.text_extractor.get_extractor_status(),
+                'testes': [],
+                'resumo': {}
             }
+            
+            # Teste 1: Status dos extractors
+            status_extractors = self.text_extractor.get_extractor_status()
+            resultado['testes'].append({
+                'teste': 'status_extractors',
+                'resultado': status_extractors,
+                'aprovado': len(status_extractors['available_extractors']) > 0
+            })
+            
+            # Teste 2: Se licitacao_id fornecido, testar extração real
+            if licitacao_id:
+                documentos = self.obter_documentos_licitacao(licitacao_id)
+                if documentos:
+                    for doc in documentos[:1]:  # Testar apenas o primeiro
+                        try:
+                            # Download do arquivo para teste
+                            response = requests.get(doc['arquivo_nuvem_url'], timeout=30)
+                            if response.status_code == 200:
+                                # Testar extração
+                                resultado_extracao = self.text_extractor.extract_text_unified(
+                                    response.content, 
+                                    doc['titulo']
+                                )
+                                
+                                resultado['testes'].append({
+                                    'teste': f'extracao_{doc["titulo"]}',
+                                    'resultado': resultado_extracao,
+                                    'aprovado': resultado_extracao['success']
+                                })
+                                break
+                        except Exception as e:
+                            resultado['testes'].append({
+                                'teste': f'erro_extracao_{doc.get("titulo", "unknown")}',
+                                'resultado': str(e),
+                                'aprovado': False
+                            })
+            
+            # Resumo
+            testes_aprovados = sum(1 for t in resultado['testes'] if t['aprovado'])
+            resultado['resumo'] = {
+                'total_testes': len(resultado['testes']),
+                'testes_aprovados': testes_aprovados,
+                'taxa_sucesso': testes_aprovados / len(resultado['testes']) * 100 if resultado['testes'] else 0
+            }
+            
+            return resultado
             
         except Exception as e:
             logger.error(f"❌ Erro no teste do extrator: {e}")
             return {
                 'success': False,
+                'error': str(e)
+            }
+
+    # 🆕 NOVO MÉTODO SÍNCRONO para resolver problema async/await
+    def processar_licitacao_sync(self, licitacao_id: str, pncp_id: str, bid: Dict) -> Dict[str, Any]:
+        """
+        Versão síncrona do processamento de documentos de licitação
+        
+        Args:
+            licitacao_id: ID da licitação
+            pncp_id: ID PNCP da licitação  
+            bid: Dados da licitação do banco
+            
+        Returns:
+            Dict com resultado do processamento
+        """
+        try:
+            logger.info(f"🚀 SYNC: Processando licitacao_id: {licitacao_id}, pncp_id: {pncp_id}")
+            
+            # PASSO 1: Verificar se documentos já existem
+            if self.verificar_documentos_existem(licitacao_id):
+                logger.info("✅ SYNC: Documentos já processados")
+                return {
+                    'success': True,
+                    'status': 'already_processed',
+                    'message': 'Documentos já foram processados anteriormente',
+                    'documentos_encontrados': len(self.obter_documentos_licitacao(licitacao_id))
+                }
+            
+            # PASSO 2: Construir URL da API PNCP
+            url_documentos = self.construir_url_documentos(bid)
+            logger.info(f"🔗 SYNC: URL documentos: {url_documentos}")
+            
+            # PASSO 3: Buscar documentos da API
+            documentos_api = self.buscar_documentos_api(url_documentos)
+            if not documentos_api:
+                return {
+                    'success': False,
+                    'error': 'Nenhum documento encontrado na API PNCP'
+                }
+            
+            logger.info(f"📄 SYNC: {len(documentos_api)} documentos encontrados na API")
+            
+            # PASSO 4: Processar cada documento
+            documentos_processados = []
+            
+            for i, doc_info in enumerate(documentos_api):
+                try:
+                    logger.info(f"🔄 SYNC: Processando documento {i+1}/{len(documentos_api)}: {doc_info.get('nome', 'sem nome')}")
+                    
+                    # Download do documento
+                    doc_content = self.baixar_documento_individual(doc_info['url'])
+                    if not doc_content:
+                        logger.warning(f"⚠️ SYNC: Falha no download de {doc_info.get('nome')}")
+                        continue
+                    
+                    # Processar e salvar documento
+                    resultado_processamento = self._salvar_arquivo_final(
+                        arquivo_content=doc_content,
+                        nome_original=doc_info['nome'],
+                        licitacao_id=licitacao_id,
+                        sequencial=i+1
+                    )
+                    
+                    if resultado_processamento:
+                        documentos_processados.extend(resultado_processamento)
+                        logger.info(f"✅ SYNC: Documento processado: {doc_info['nome']}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ SYNC: Erro ao processar documento {doc_info.get('nome')}: {e}")
+                    continue
+            
+            # PASSO 5: Salvar no banco de dados
+            if documentos_processados:
+                resultado_banco = self.salvar_documentos_no_banco(documentos_processados)
+                
+                if resultado_banco['success']:
+                    logger.info(f"🎉 SYNC: Processamento concluído! {resultado_banco['documentos_salvos']} documentos salvos")
+                    
+                    return {
+                        'success': True,
+                        'status': 'completed',
+                        'message': f'{resultado_banco["documentos_salvos"]} documentos processados com sucesso',
+                        'documentos_processados': resultado_banco['documentos_salvos'],
+                        'total_encontrados': len(documentos_api)
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': f'Erro ao salvar no banco: {resultado_banco.get("error")}'
+                    }
+            else:
+                return {
+                    'success': False,
+                    'error': 'Nenhum documento foi processado com sucesso'
+                }
+            
+        except Exception as e:
+            logger.error(f"❌ SYNC: Erro geral no processamento: {e}")
+            return {
+                'success': False,
+                'error': f'Erro no processamento síncrono: {str(e)}'
+            }
+    
+    # ===== NOVOS MÉTODOS PARA PREPARAÇÃO AUTOMÁTICA =====
+    
+    def set_licitacao_context(self, licitacao_id: str, pncp_id: str):
+        """
+        Configurar contexto da licitação para processamento
+        """
+        self.current_licitacao_id = licitacao_id
+        self.current_pncp_id = pncp_id
+        logger.info(f"🎯 Contexto configurado: licitacao_id={licitacao_id}, pncp_id={pncp_id}")
+    
+    def process_licitacao_documents(self, pncp_id: str, licitacao_id: str) -> Dict[str, Any]:
+        """
+        Processar documentos de uma licitação específica (método principal)
+        """
+        try:
+            logger.info(f"🚀 Iniciando processamento de documentos para {pncp_id}")
+            
+            # PASSO 1: Verificar se documentos já existem
+            if self.verificar_documentos_existem(licitacao_id):
+                logger.info("✅ Documentos já processados, retornando status")
+                return {
+                    'status': 'already_processed',
+                    'documents_count': len(self.obter_documentos_licitacao(licitacao_id)),
+                    'estimated_time': 0
+                }
+            
+            # PASSO 2: Buscar informações da licitação
+            licitacao_info = self.extrair_info_licitacao(licitacao_id)
+            if not licitacao_info:
+                raise ValueError(f"Licitação {licitacao_id} não encontrada")
+            
+            # PASSO 3: Construir URL da API PNCP
+            url_documentos = self.construir_url_documentos(licitacao_info)
+            
+            # PASSO 4: Processar documentos da API
+            documentos_processados = self.processar_resposta_pncp(url_documentos, licitacao_id)
+            
+            if not documentos_processados:
+                logger.warning("⚠️ Nenhum documento processado")
+                return {
+                    'status': 'no_documents',
+                    'documents_count': 0,
+                    'estimated_time': 0
+                }
+            
+            # PASSO 5: Salvar no banco
+            resultado_salvamento = self.salvar_documentos_no_banco(documentos_processados)
+            
+            logger.info(f"✅ Processamento concluído: {len(documentos_processados)} documentos")
+            
+            return {
+                'status': 'completed',
+                'documents_count': len(documentos_processados),
+                'estimated_time': 0,
+                'processed_files': [doc.get('nome_arquivo') for doc in documentos_processados],
+                'database_result': resultado_salvamento
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no processamento: {str(e)}")
+            return {
+                'status': 'error',
                 'error': str(e),
-                'extractor_status': self.text_extractor.get_extractor_status() if hasattr(self, 'text_extractor') else {}
+                'documents_count': 0
+            }
+    
+    def check_documents_status(self, licitacao_id: str) -> Dict[str, Any]:
+        """
+        Verificar status dos documentos processados
+        """
+        try:
+            logger.info(f"📊 Verificando status dos documentos para {licitacao_id}")
+            
+            documentos = self.obter_documentos_licitacao(licitacao_id)
+            
+            if documentos:
+                # Formatar lista de documentos para o frontend
+                documents_list = []
+                for doc in documentos:
+                    documents_list.append({
+                        'name': doc.get('nome_arquivo'),
+                        'url': doc.get('url_publica'),
+                        'type': doc.get('tipo_arquivo', 'pdf'),
+                        'size': doc.get('tamanho_arquivo'),
+                        'created_at': doc.get('data_criacao'),
+                        'updated_at': doc.get('data_atualizacao')
+                    })
+                
+                return {
+                    'documents_processed': len(documentos),
+                    'documents_list': documents_list,
+                    'last_update': max([doc.get('data_atualizacao', '') for doc in documentos]) if documentos else None
+                }
+            else:
+                return {
+                    'documents_processed': 0,
+                    'documents_list': [],
+                    'last_update': None
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao verificar status: {str(e)}")
+            return {
+                'documents_processed': 0,
+                'documents_list': [],
+                'error': str(e)
+            }
+    
+    def get_processing_status(self, licitacao_id: str) -> Dict[str, Any]:
+        """
+        Obter status de processamento em andamento (simulado por enquanto)
+        """
+        try:
+            # Por enquanto, simular que não há processamento em andamento
+            # Em uma implementação real, isso consultaria uma tabela de jobs/tasks
+            return {
+                'is_processing': False,
+                'current_step': 'waiting',
+                'progress': 0,
+                'eta': 0
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao obter status de processamento: {str(e)}")
+            return {
+                'is_processing': False,
+                'error': str(e)
+            }
+    
+    def get_current_timestamp(self) -> str:
+        """
+        Obter timestamp atual formatado
+        """
+        return datetime.now().isoformat()
+    
+    def cleanup_failed_processing(self, licitacao_id: str) -> Dict[str, Any]:
+        """
+        Limpar processamento que falhou
+        """
+        try:
+            logger.info(f"🧹 Limpando processamento falhado para {licitacao_id}")
+            
+            # Remover documentos incompletos do banco
+            self._limpar_documentos_licitacao(licitacao_id)
+            
+            # Remover arquivos temporários se existirem
+            files_removed = 0
+            temp_pattern = self.temp_path / f"*{licitacao_id}*"
+            
+            for temp_file in self.temp_path.glob(f"*{licitacao_id}*"):
+                if temp_file.is_file():
+                    temp_file.unlink()
+                    files_removed += 1
+            
+            logger.info(f"✅ Limpeza concluída: {files_removed} arquivos removidos")
+            
+            return {
+                'files_removed': files_removed,
+                'cleanup_status': 'success'
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Erro na limpeza: {str(e)}")
+            return {
+                'files_removed': 0,
+                'cleanup_status': 'error',
+                'error': str(e)
             } 
