@@ -757,15 +757,9 @@ class BidController:
                 logger.error("❌ Variáveis de ambiente SUPABASE não configuradas.")
                 return self._return_mock_documents(uuid_licitacao_id, "Supabase não configurado")
 
-            # >>> INÍCIO DO LOG DE DEPURAÇÃO <<<
-            service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
-            key_fingerprint = f"{service_key[:5]}...{service_key[-5:]}" if len(service_key) > 10 else "Chave muito curta para fingerprint"
-            logger.info(f"🔑 DEBUG: Usando SUPABASE_SERVICE_KEY com o seguinte fingerprint: {key_fingerprint}")
-            # >>> FIM DO LOG DE DEPURAÇÃO <<<
-
             supabase: Client = create_client(
                 os.environ.get("SUPABASE_URL"), 
-                service_key # Usando a variável que acabamos de obter
+                os.environ.get("SUPABASE_SERVICE_KEY")
             )
             bucket_name = "licitacao-documents"
             logger.info(f"✅ Cliente Supabase criado, acessando bucket: {bucket_name}")

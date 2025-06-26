@@ -33,26 +33,19 @@ class LicitacaoService:
 
     def _gerar_palavras_busca_simples(self, palavra_chave: str, usar_sinonimos: bool = False) -> List[str]:
         """
-        GERAÇÃO SIMPLES como o Thiago:
-        - Palavra original sempre incluída
-        - Sinônimos só se explicitamente solicitado
-        - Máximo 3-5 termos para não diluir
+        GERAÇÃO OBRIGATÓRIA DE SINÔNIMOS:
+        - A busca agora é conceitual, não por palavras soltas.
+        - Palavra original sempre incluída + sinônimos gerados via IA.
         """
         if not palavra_chave:
             raise ValueError("Palavra-chave é obrigatória")
             
         palavras_busca = [palavra_chave]
         
-        # ✨ NOVO: adicionar palavras individuais da frase para ampliar correspondência
-        for termo in palavra_chave.split():
-            termo_limpo = termo.strip()
-            if len(termo_limpo) > 2 and termo_limpo not in palavras_busca:
-                palavras_busca.append(termo_limpo)
-        
-        # Sinônimos só se explicitamente habilitado E serviço disponível
-        if usar_sinonimos and self.openai_service:
+        # A geração de sinônimos agora é OBRIGATÓRIA para enriquecer a busca.
+        if self.openai_service:
             try:
-                logger.info(f"🔍 Gerando sinônimos para: '{palavra_chave}'")
+                logger.info(f"🔍 Gerando sinônimos obrigatórios para: '{palavra_chave}'")
                 sinonimos = self.openai_service.gerar_sinonimos(palavra_chave)
                 
                 # Limitar a 4 sinônimos (5 termos total) para não diluir
@@ -69,7 +62,9 @@ class LicitacaoService:
                 logger.info(f"✨ Sinônimos adicionados: {palavras_busca[1:]}")
                 
             except Exception as e:
-                logger.warning(f"❌ Erro ao gerar sinônimos: {e}")
+                logger.warning(f"⚠️ Erro ao gerar sinônimos, busca seguirá com o termo original: {e}")
+        else:
+            logger.warning("⚠️ OpenAI Service não está disponível. A busca usará apenas o termo original.")
         
         # Garantir máximo de 5 termos
         palavras_busca = palavras_busca[:5]

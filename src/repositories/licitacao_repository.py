@@ -252,10 +252,9 @@ class LicitacaoPNCPRepository:
             # Preparar estados
             estados = filtros.get('estados', [])
             if not estados or not any(estados):
-                logger.info("Nenhum estado especificado, buscando em todo o Brasil")
-                estados = ['']
+                logger.info("Nenhum estado especificado, buscando em todo o Brasil (Estratégia Ampla)")
             else:
-                logger.info(f"🗺️ Buscando nos estados: {estados}")
+                logger.info(f"🗺️ Buscando nos estados (Filtro Local): {estados}")
             
             # Preparar modalidades (SIMPLIFICADO)
             modalidades = filtros.get('modalidades', [])
@@ -289,38 +288,47 @@ class LicitacaoPNCPRepository:
         - Uma modalidade por vez
         - Foco em resultados, não volume
         """
-        logger.info("🎯 INICIANDO BUSCA REAL ESTILO THIAGO")
+        logger.info("🎯 INICIANDO BUSCA NACIONAL AMPLA")
         
-        # CONFIGURAÇÃO REAL THIAGO
-        max_paginas_por_estado = 5      # Reduzido de 10 para 5
-        tamanho_pagina_api = 50         # Máximo da API
+        # CONFIGURAÇÃO THIAGO AMPLIADA E MAIS SEGURA
+        tamanho_pagina_api = 50         # ✅ Valor mais seguro e garantido
+        total_licitacoes_desejadas = 10000
+        max_paginas_por_modalidade = total_licitacoes_desejadas // tamanho_pagina_api # -> 200 páginas
         
-        logger.info(f"📊 Estratégia: {max_paginas_por_estado} páginas × {tamanho_pagina_api} = {max_paginas_por_estado * tamanho_pagina_api} por estado")
+        logger.info(f"📊 Estratégia: {max_paginas_por_modalidade} páginas × {tamanho_pagina_api} = {total_licitacoes_desejadas} por modalidade")
         
-        # Criar combinações SIMPLES
+        # Criar combinações SIMPLES (Nacional)
         combinacoes = []
-        for estado in estados:
-            for modalidade in modalidades:
-                for pagina_api in range(1, max_paginas_por_estado + 1):
-                    filtros_busca = {
-                        'estados': [estado] if estado else [],
-                        'modalidades': [modalidade],
-                        'valor_minimo': filtros.get('valor_minimo'),
-                        'valor_maximo': filtros.get('valor_maximo'),
-                        # NÃO inclui palavras_busca aqui - será usado só no filtro local
-                    }
-                    combinacoes.append((filtros_busca, [], pagina_api, tamanho_pagina_api))
+        for modalidade in modalidades:
+            for pagina_api in range(1, max_paginas_por_modalidade + 1):
+                filtros_busca = {
+                    'modalidades': [modalidade],
+                }
+                combinacoes.append((filtros_busca, [], pagina_api, tamanho_pagina_api))
         
         total_buscas = len(combinacoes)
-        logger.info(f"🚀 Executando {total_buscas} buscas SIMPLES na API")
+        logger.info(f"🚀 Executando {total_buscas} buscas NACIONAIS na API em lotes...")
         
-        # Executar buscas em paralelo
+        # Executar buscas em paralelo em lotes para evitar rate limiting
+        batch_size = 20  # Processar 20 requisições por vez
+        all_results = []
         async with aiohttp.ClientSession() as session:
-            tarefas = [
-                self._buscar_licitacoes_async(session, *args)
-                for args in combinacoes
-            ]
-            resultados = await asyncio.gather(*tarefas, return_exceptions=True)
+            for i in range(0, total_buscas, batch_size):
+                batch_combinacoes = combinacoes[i:i + batch_size]
+                logger.info(f"  -> Processando lote {i//batch_size + 1}/{(total_buscas + batch_size - 1)//batch_size}...")
+                
+                tarefas = [
+                    self._buscar_licitacoes_async(session, *args)
+                    for args in batch_combinacoes
+                ]
+                batch_results = await asyncio.gather(*tarefas, return_exceptions=True)
+                all_results.extend(batch_results)
+                
+                if i + batch_size < total_buscas:
+                    logger.info("  -> Aguardando 1 segundo antes do próximo lote...")
+                    await asyncio.sleep(1) # Pausa educada entre os lotes
+        
+        resultados = all_results
         
         # Processar resultados
         licitacoes_brutas = []
@@ -328,11 +336,12 @@ class LicitacaoPNCPRepository:
         erros = 0
         
         for resultado in resultados:
-            if isinstance(resultado, Exception):
+            # 🐞 CORREÇÃO: Tratar None (falha controlada) e Exceptions como erro
+            if isinstance(resultado, Exception) or resultado is None:
                 erros += 1
                 continue
                 
-            if resultado and 'data' in resultado:
+            if 'data' in resultado:
                 licitacoes_brutas.extend(resultado['data'])
                 sucessos += 1
         
@@ -407,6 +416,9 @@ class LicitacaoPNCPRepository:
         
         # Extrair filtros adicionais
         cidades_filtro = {c.strip().upper() for c in filtros.get('cidades', []) if c.strip()}
+        estados_filtro = {uf.strip().upper() for uf in filtros.get('estados', []) if uf.strip()}
+        valor_min_filtro = filtros.get('valor_minimo')
+        valor_max_filtro = filtros.get('valor_maximo')
         data_atual = datetime.now()
         
         # Processar licitações
@@ -417,6 +429,8 @@ class LicitacaoPNCPRepository:
         rejeitadas_palavra = 0
         rejeitadas_prazo = 0
         rejeitadas_cidade = 0
+        rejeitadas_estado = 0
+        rejeitadas_valor = 0
         
         for lic in licitacoes:
             total_analisadas += 1
@@ -427,7 +441,55 @@ class LicitacaoPNCPRepository:
                 rejeitadas_duplicata += 1
                 continue
             
-            # FILTRO PRINCIPAL: Busca SIMPLES no objeto (como Thiago)
+            # FILTROS EM CAMADAS (do mais barato para o mais caro)
+            
+            # Camada 1: Filtro de estado (se especificado)
+            if estados_filtro:
+                estado_licitacao = None
+                unidade_orgao_uf = lic.get('unidadeOrgao', {})
+                if unidade_orgao_uf:
+                    estado_licitacao = unidade_orgao_uf.get('ufSigla', '').strip().upper()
+
+                if not estado_licitacao or estado_licitacao not in estados_filtro:
+                    rejeitadas_estado += 1
+                    continue
+            
+            # Camada 2: Filtro de cidade (se especificado)
+            if cidades_filtro:
+                cidade_licitacao = None
+                unidade_orgao = lic.get('unidadeOrgao', {})
+                if unidade_orgao:
+                    cidade_licitacao = unidade_orgao.get('municipioNome', '').strip().upper()
+                
+                if not cidade_licitacao or cidade_licitacao not in cidades_filtro:
+                    rejeitadas_cidade += 1
+                    continue
+
+            # Camada 3: Filtro de data (prazo)
+            data_encerramento = lic.get('dataEncerramentoProposta')
+            if data_encerramento:
+                try:
+                    if isinstance(data_encerramento, str):
+                        data_clean = data_encerramento.split('T')[0]
+                        data_encerramento_dt = datetime.strptime(data_clean, '%Y-%m-%d')
+                        
+                        if data_encerramento_dt.date() < data_atual.date():
+                            rejeitadas_prazo += 1
+                            continue
+                except:
+                    pass  # Se erro na data, aceita a licitação
+
+            # Camada 4: Filtro de valor (mínimo e máximo)
+            valor_licitacao = lic.get('valorTotalEstimado')
+            if valor_licitacao is not None:
+                if valor_min_filtro is not None and valor_licitacao < valor_min_filtro:
+                    rejeitadas_valor += 1
+                    continue
+                if valor_max_filtro is not None and valor_licitacao > valor_max_filtro:
+                    rejeitadas_valor += 1
+                    continue
+            
+            # Camada 5 (FINAL): Filtro textual (o mais caro)
             objeto_compra = lic.get('objetoCompra', '')
             if not objeto_compra:
                 rejeitadas_palavra += 1
@@ -435,7 +497,6 @@ class LicitacaoPNCPRepository:
             
             objeto_normalizado = self._normalizar_simples(objeto_compra)
             
-            # Verifica se QUALQUER termo está presente (OR lógico)
             encontrou_termo = False
             for termo in termos_normalizados:
                 if termo in objeto_normalizado:
@@ -447,33 +508,7 @@ class LicitacaoPNCPRepository:
                 logger.debug(f"❌ Rejeitada por palavra: {numero_controle} - '{objeto_compra[:50]}...'")
                 continue
             
-            # Filtro de data (SIMPLES como Thiago)
-            data_encerramento = lic.get('dataEncerramentoProposta')
-            if data_encerramento:
-                try:
-                    if isinstance(data_encerramento, str):
-                        data_clean = data_encerramento.split('T')[0]
-                        data_encerramento_dt = datetime.strptime(data_clean, '%Y-%m-%d')
-                        
-                        # Aceita licitações que encerram hoje ou no futuro
-                        if data_encerramento_dt.date() < data_atual.date():
-                            rejeitadas_prazo += 1
-                            continue
-                except:
-                    pass  # Se erro na data, aceita a licitação
-            
-            # Filtro de cidade (se especificado)
-            if cidades_filtro:
-                cidade_licitacao = None
-                unidade_orgao = lic.get('unidadeOrgao', {})
-                if unidade_orgao:
-                    cidade_licitacao = unidade_orgao.get('municipioNome', '').strip().upper()
-                
-                if not cidade_licitacao or cidade_licitacao not in cidades_filtro:
-                    rejeitadas_cidade += 1
-                    continue
-            
-            # Licitação aprovada
+            # Licitação aprovada por todos os filtros
             vistas.add(numero_controle)
             licitacoes_aprovadas.append(lic)
         
@@ -483,9 +518,11 @@ class LicitacaoPNCPRepository:
         logger.info(f"   ✅ Aprovadas: {len(licitacoes_aprovadas)}")
         logger.info(f"   ❌ Rejeitadas:")
         logger.info(f"      🔄 Duplicatas: {rejeitadas_duplicata}")
-        logger.info(f"      🔤 Palavra: {rejeitadas_palavra}")
-        logger.info(f"      ⏰ Prazo: {rejeitadas_prazo}")
+        logger.info(f"      🗺️ Estado: {rejeitadas_estado}")
         logger.info(f"      🏙️ Cidade: {rejeitadas_cidade}")
+        logger.info(f"      ⏰ Prazo: {rejeitadas_prazo}")
+        logger.info(f"      💰 Valor: {rejeitadas_valor}")
+        logger.info(f"      🔤 Palavra: {rejeitadas_palavra}")
         
         return licitacoes_aprovadas
 
@@ -534,7 +571,7 @@ class LicitacaoPNCPRepository:
 
         # Período amplo como o Thiago
         hoje = datetime.now()
-        data_inicio_dt = hoje - timedelta(days=7)   # Última semana
+        data_inicio_dt = hoje - timedelta(days=14)   # Última semana
         data_fim_dt = hoje + timedelta(days=120)    # Próximos 4 meses
         data_inicial = data_inicio_dt.strftime('%Y%m%d')
         data_final = data_fim_dt.strftime('%Y%m%d')
@@ -544,7 +581,7 @@ class LicitacaoPNCPRepository:
             'dataInicial': data_inicial,
             'dataFinal': data_final,
             'pagina': pagina,
-            'tamanhoPagina': min(itens_por_pagina, 50)  # Máximo 50
+            'tamanhoPagina': min(itens_por_pagina, 50)  # ✅ MÁXIMO 50 para segurança
         }
 
         # Modalidade (obrigatória)
@@ -555,15 +592,16 @@ class LicitacaoPNCPRepository:
         else:
             params['codigoModalidadeContratacao'] = 8  # Pregão eletrônico
 
-        # UF se especificada
-        if filtros.get('estados') and filtros['estados'][0]:
-            params['uf'] = filtros['estados'][0]
+        # ❌ NÃO INCLUIR: params['valorMinimo'], params['valorMaximo']
+        #     Estes serão filtrados localmente.
 
-        # Valor mínimo/máximo (eficientes na API)
+        # ❌ NÃO INCLUIR: params['uf'] = ...
         if filtros.get('valor_minimo') is not None:
-            params['valorMinimo'] = filtros['valor_minimo']
+            # params['valorMinimo'] = filtros['valor_minimo'] # MOVIDO PARA FILTRO LOCAL
+            pass
         if filtros.get('valor_maximo') is not None:
-            params['valorMaximo'] = filtros['valor_maximo']
+            # params['valorMaximo'] = filtros['valor_maximo'] # MOVIDO PARA FILTRO LOCAL
+            pass
 
         # ❌ NÃO INCLUIR: params['busca'] = ...
         
@@ -583,20 +621,20 @@ class LicitacaoPNCPRepository:
         palavras_busca: List[str],
         pagina: int,
         itens_por_pagina: int
-    ) -> Dict[str, Any]:
-        """Busca assíncrona básica"""
+    ) -> Optional[Dict[str, Any]]:
+        """Busca assíncrona básica. Retorna None em caso de falha."""
         try:
             endpoint = f"{self.base_url}/contratacoes/publicacao"
             params = self._construir_parametros(filtros, palavras_busca, pagina, itens_por_pagina)
             
             async with session.get(endpoint, params=params, timeout=self.timeout) as response:
                 if response.status != 200:
-                    logger.warning(f"Erro HTTP {response.status} na página {pagina}")
-                    return {'data': []}
+                    logger.warning(f"Erro HTTP {response.status} na página {pagina} com params {params}")
+                    return None  # 🐞 CORREÇÃO: Sinaliza falha
                 
                 if "application/json" not in response.headers.get("Content-Type", ""):
                     logger.warning(f"Resposta não-JSON na página {pagina}")
-                    return {'data': []}
+                    return None  # 🐞 CORREÇÃO: Sinaliza falha
 
                 data = await response.json()
                 resultados = data.get('data', [])
@@ -606,7 +644,7 @@ class LicitacaoPNCPRepository:
 
         except Exception as e:
             logger.warning(f"Erro na busca página {pagina}: {str(e)}")
-            return {'data': []}
+            return None  # 🐞 CORREÇÃO: Sinaliza falha
 
     def buscar_licitacoes(
         self,
