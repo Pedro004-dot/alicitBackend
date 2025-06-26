@@ -68,11 +68,13 @@ class RetrievalEngine:
 
             ## INSTRUÇÕES DE ANÁLISE:
 
-            ### 1. PRECISÃO DOCUMENTAL
+            ### 1. PRECISÃO DOCUMENTAL COM REFERÊNCIAS OBRIGATÓRIAS
             - Use EXCLUSIVAMENTE informações do contexto fornecido
-            - Cite SEMPRE: página, seção, item, subitem ou cláusula específica
-            - Para valores: identifique se são estimados, máximos ou de referência
-            - Destaque prazos, datas e condições temporais críticas
+            - 🔥 OBRIGATÓRIO: SEMPRE cite a fonte específica no formato: **[Arquivo: nome_do_arquivo.pdf, Página: X]**
+            - Para cada informação mencionada, indique EXATAMENTE onde ela está
+            - Quando usar trechos específicos, identifique como "conforme trecho X" onde X é o número do trecho
+            - Para valores: identifique se são estimados, máximos ou de referência E cite a fonte
+            - Destaque prazos, datas e condições temporais críticas COM suas respectivas fontes
 
             ### 2. ANÁLISE ESTRATÉGICA
             - Identifique requisitos obrigatórios vs desejáveis
@@ -88,15 +90,28 @@ class RetrievalEngine:
             * Critérios subjetivos de julgamento
             * Cláusulas que favoreçam empresa específica
 
-            ### 4. FORMATAÇÃO ESTRUTURADA
-            - Destaque informações críticas em **negrito**
-            - Liste requisitos em bullet points
-            - Separe análise técnica de análise comercial
-            - Seja claro e objetivo, não seja redundante
-            - Sua estrutura deve ser como uma resposta de um especialista em licitações, com títulos, subtítulos, listas, etc.
+            ### 4. ESTILO DA RESPOSTA COM REFERÊNCIAS
+            - **Seja Conversacional e Direto:** Inicie sua resposta de forma natural, indo direto ao ponto da pergunta. Evite introduções robóticas.
+            - **Destaque o Essencial:** Use **negrito** para destacar informações críticas como valores, prazos, nomes e objetos. Isso ajuda na leitura rápida.
+            - **Organize com Clareza:** Após a resposta direta, se houver mais detalhes, organize-os em uma lista simples (usando hífens `-`) para facilitar a compreensão. Não use títulos ou seções com `#`.
+            - **🔥 EXEMPLO CORRETO DE RESPOSTA COM REFERÊNCIAS:**
+                - Pergunta do usuário: "Qual o objeto?"
+                - Sua resposta ideal:
+                    O objeto da licitação é a **aquisição parcelada de itens de higiene e limpeza** **[Arquivo: edital.pdf, Página: 1]**.
+                    
+                    Os principais pontos são:
+                    - **Finalidade:** Garantir a manutenção da salubridade e segurança para alunos da Rede Municipal de Ensino e outras entidades **[Arquivo: edital.pdf, Página: 2]**.
+                    - **Entidades atendidas:** Administração Municipal, Fundo de Saúde, Fundo de Assistência Social e SAMAE **[Arquivo: termo_referencia.pdf, Página: 3]**.
+                    - **Localidade:** Município de **Jacinto Machado/SC** **[Arquivo: edital.pdf, Página: 1]**.
 
             ### 5. QUANDO NÃO SOUBER
             Seja transparente: "Esta informação não está disponível nos documentos fornecidos. Recomendo consultar [documento específico] ou contatar o órgão licitante."
+
+            ### 6. FORMATO OBRIGATÓRIO DE REFERÊNCIAS
+            - Para CADA informação citada, use: **[Arquivo: nome_exato_do_arquivo.pdf, Página: X]**
+            - Se a informação vem de múltiplos trechos, liste todas as fontes
+            - Se não conseguir identificar a página, use: **[Arquivo: nome_do_arquivo.pdf, Página: não identificada]**
+            - NUNCA omita as referências de fonte
 
             ## FOCO NOS RESULTADOS:
             Sua análise deve permitir que a empresa tome decisões informadas sobre:
@@ -104,6 +119,8 @@ class RetrievalEngine:
             - Estratégia de proposta técnica e comercial  
             - Cronograma de preparação
             - Recursos necessários para habilitação
+            
+            ⚠️ LEMBRE-SE: Toda informação DEVE ter sua fonte citada no formato obrigatório especificado acima.
             """
             
             user_prompt = f"""
@@ -201,7 +218,7 @@ class RetrievalEngine:
             return (input_tokens * 0.0015 / 1000) + (output_tokens * 0.002 / 1000)
     
     def _build_context(self, chunks: List[Dict], licitacao_info: Optional[Dict] = None) -> str:
-        """Constrói contexto para o LLM"""
+        """Constrói contexto para o LLM com referências de arquivo"""
         context_parts = []
         
         # Adicionar informações da licitação se disponível
@@ -215,10 +232,24 @@ class RetrievalEngine:
             - UF: {licitacao_info.get('uf', 'N/A')}
             """)
         
-        # Adicionar chunks do documento
+        # Adicionar chunks do documento COM nome do arquivo
         for i, chunk in enumerate(chunks, 1):
+            # Extrair nome do arquivo do campo document_title ou tentar deduzir
+            arquivo_nome = chunk.get('document_title', 'documento_nao_identificado.pdf')
+            
+            # Se não tem document_title, tentar pegar do metadata ou usar fallback
+            if arquivo_nome == 'documento_nao_identificado.pdf':
+                arquivo_nome = chunk.get('metadata', {}).get('filename', 'documento_nao_identificado.pdf')
+            
+            # Garantir que termine com .pdf se não especificado
+            if not arquivo_nome.endswith(('.pdf', '.doc', '.docx')):
+                arquivo_nome += '.pdf'
+            
             context_parts.append(f"""
-            TRECHO {i} (Página {chunk.get('page_number', 'N/A')}):
+            TRECHO {i}:
+            - Arquivo: {arquivo_nome}
+            - Página: {chunk.get('page_number', 'não identificada')}
+            - Conteúdo:
             {chunk['text']}
             """)
         

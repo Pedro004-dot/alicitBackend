@@ -449,4 +449,146 @@ class MatchRepository(BaseRepository):
             ORDER BY COUNT(m.id) DESC, AVG(m.score_similaridade) DESC
         """
         
-        return self.execute_custom_query(query, tuple(params) if params else ()) 
+        return self.execute_custom_query(query, tuple(params) if params else ())
+    
+    def find_recent_matches_by_period(self, limit: int = 10, days_back: int = 7) -> List[Dict[str, Any]]:
+        """Buscar matches recentes por período específico"""
+        query = """
+            SELECT 
+                m.id as match_id,
+                m.score_similaridade,
+                m.match_type as tipo_match,
+                m.data_match as match_timestamp,
+                m.justificativa_match,
+                -- Dados da empresa
+                e.id as empresa_id,
+                e.nome_fantasia as empresa_nome,
+                e.razao_social as empresa_razao_social,
+                e.cnpj as empresa_cnpj,
+                -- Dados da licitação
+                l.id as licitacao_id,
+                l.pncp_id as licitacao_pncp_id,
+                l.objeto_compra as licitacao_objeto,
+                l.valor_total_estimado as licitacao_valor,
+                l.uf as licitacao_uf,
+                l.data_publicacao as licitacao_data_publicacao,
+                l.data_encerramento_proposta as licitacao_data_encerramento
+            FROM matches m
+            JOIN empresas e ON m.empresa_id = e.id
+            JOIN licitacoes l ON m.licitacao_id = l.id
+            WHERE m.created_at >= NOW() - INTERVAL '%s days'
+            ORDER BY m.created_at DESC
+            LIMIT %s
+        """
+        
+        try:
+            results = self.execute_custom_query(query, (days_back, limit))
+            
+            # Formatar resultados
+            formatted_matches = []
+            for match in results:
+                formatted_match = {
+                    'id': match.get('match_id'),
+                    'score': float(match.get('score_similaridade', 0)),
+                    'tipo_match': match.get('tipo_match'),
+                    'timestamp': match.get('match_timestamp'),
+                    'justificativa': match.get('justificativa_match'),
+                    'empresa': {
+                        'id': match.get('empresa_id'),
+                        'nome': match.get('empresa_nome'),
+                        'razao_social': match.get('empresa_razao_social'),
+                        'cnpj': match.get('empresa_cnpj')
+                    },
+                    'licitacao': {
+                        'id': match.get('licitacao_id'),
+                        'pncp_id': match.get('licitacao_pncp_id'),
+                        'objeto_compra': match.get('licitacao_objeto'),
+                        'valor_total_estimado': match.get('licitacao_valor'),
+                        'uf': match.get('licitacao_uf'),
+                        'data_publicacao': match.get('licitacao_data_publicacao'),
+                        'data_encerramento_proposta': match.get('licitacao_data_encerramento')
+                    }
+                }
+                formatted_matches.append(formatted_match)
+                
+            return formatted_matches
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar matches por período: {e}")
+            return []
+    
+    def find_recent_matches_with_full_details(self, limit: int = 10, days_back: int = 7) -> List[Dict[str, Any]]:
+        """Buscar matches recentes com todos os dados necessários para validação LLM"""
+        query = """
+            SELECT 
+                m.id as match_id,
+                m.score_similaridade,
+                m.match_type as tipo_match,
+                m.data_match as match_timestamp,
+                m.justificativa_match,
+                -- Dados completos da empresa
+                e.id as empresa_id,
+                e.nome_fantasia as empresa_nome,
+                e.razao_social as empresa_razao_social,
+                e.cnpj as empresa_cnpj,
+                e.descricao_servicos_produtos as empresa_descricao,
+                e.produtos as empresa_produtos,
+                e.setor_atuacao,
+                -- Dados completos da licitação
+                l.id as licitacao_id,
+                l.pncp_id as licitacao_pncp_id,
+                l.objeto_compra as licitacao_objeto,
+                l.valor_total_estimado as licitacao_valor,
+                l.uf as licitacao_uf,
+                l.data_publicacao as licitacao_data_publicacao,
+                l.data_encerramento_proposta as licitacao_data_encerramento,
+                l.modalidade_nome as licitacao_modalidade,
+                l.situacao_compra_nome as licitacao_situacao,
+                l.razao_social as licitacao_orgao
+            FROM matches m
+            JOIN empresas e ON m.empresa_id = e.id
+            JOIN licitacoes l ON m.licitacao_id = l.id
+            WHERE m.created_at >= NOW() - INTERVAL '%s days'
+            ORDER BY m.created_at DESC
+            LIMIT %s
+        """
+        
+        try:
+            results = self.execute_custom_query(query, (days_back, limit))
+            
+            # Formatar resultados com dados completos para LLM
+            detailed_matches = []
+            for match in results:
+                detailed_match = {
+                    'match_id': match.get('match_id'),
+                    'score_similaridade': float(match.get('score_similaridade', 0)),
+                    'tipo_match': match.get('tipo_match'),
+                    'match_timestamp': match.get('match_timestamp'),
+                    'justificativa_match': match.get('justificativa_match'),
+                    # Dados empresa para LLM
+                    'empresa_id': match.get('empresa_id'),
+                    'empresa_nome': match.get('empresa_nome'),
+                    'empresa_razao_social': match.get('empresa_razao_social'),
+                    'empresa_cnpj': match.get('empresa_cnpj'),
+                    'empresa_descricao': match.get('empresa_descricao'),
+                    'empresa_produtos': match.get('empresa_produtos'),
+                    'setor_atuacao': match.get('setor_atuacao'),
+                    # Dados licitação para LLM
+                    'licitacao_id': match.get('licitacao_id'),
+                    'licitacao_pncp_id': match.get('licitacao_pncp_id'),
+                    'licitacao_objeto': match.get('licitacao_objeto'),
+                    'licitacao_valor': match.get('licitacao_valor'),
+                    'licitacao_uf': match.get('licitacao_uf'),
+                    'licitacao_data_publicacao': match.get('licitacao_data_publicacao'),
+                    'licitacao_data_encerramento': match.get('licitacao_data_encerramento'),
+                    'licitacao_modalidade': match.get('licitacao_modalidade'),
+                    'licitacao_situacao': match.get('licitacao_situacao'),
+                    'licitacao_orgao': match.get('licitacao_orgao')
+                }
+                detailed_matches.append(detailed_match)
+                
+            return detailed_matches
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar matches detalhados: {e}")
+            return [] 

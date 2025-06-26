@@ -117,8 +117,28 @@ class VectorStore:
                     
                     # Executar busca híbrida com casting explícito
                     try:
+                        # 🔧 CORREÇÃO v2: Reintroduzir JOINs para buscar metadados
+                        # essenciais como `document_title` e `page_number`.
                         cursor.execute("""
-                            SELECT * FROM hybrid_search(%s::vector(1024), %s::text, %s::uuid, %s::integer, %s::double precision, %s::double precision)
+                            SELECT 
+                                hs.chunk_id,
+                                dc.chunk_text,
+                                dc.page_number,
+                                dc.metadata_chunk,
+                                dl.titulo as document_title,
+                                hs.semantic_score,
+                                hs.text_score,
+                                hs.hybrid_score
+                            FROM hybrid_search(
+                                %s::vector(1024), 
+                                %s::text, 
+                                %s::uuid, 
+                                %s::integer, 
+                                %s::float, 
+                                %s::float
+                            ) hs
+                            JOIN documentos_chunks dc ON dc.id = hs.chunk_id
+                            JOIN documentos_licitacao dl ON dc.documento_id = dl.id
                         """, (
                             query_embedding,
                             query_text,
@@ -136,11 +156,13 @@ class VectorStore:
                             chunk = {
                                 'id': str(row[0]),
                                 'text': row[1],
-                                'similarity_score': float(row[2]),
-                                'text_score': float(row[3]),
-                                'hybrid_score': float(row[4]),
-                                'metadata': row[5] or {},
-                                'final_score': float(row[4])  # Para compatibilidade
+                                'page_number': row[2],
+                                'metadata': row[3] or {},
+                                'document_title': row[4],
+                                'similarity_score': float(row[5]),
+                                'text_score': float(row[6]),
+                                'hybrid_score': float(row[7]),
+                                'final_score': float(row[7])  # Para compatibilidade
                             }
                             chunks.append(chunk)
                         
@@ -164,12 +186,19 @@ class VectorStore:
         try:
             cursor.execute("""
                 SELECT 
-                    id, chunk_text, metadata_chunk,
-                    1 - (embedding <=> %s) as similarity_score
-                FROM documentos_chunks
-                WHERE licitacao_id = %s 
-                AND embedding IS NOT NULL
-                ORDER BY embedding <=> %s
+                    dc.id, 
+                    dc.chunk_text, 
+                    dc.page_number,
+                    dc.chunk_type,
+                    dc.section_title,
+                    dc.metadata_chunk,
+                    dl.titulo as document_title,
+                    1 - (dc.embedding <=> %s) as similarity_score
+                FROM documentos_chunks dc
+                JOIN documentos_licitacao dl ON dc.documento_id = dl.id
+                WHERE dc.licitacao_id = %s 
+                AND dc.embedding IS NOT NULL
+                ORDER BY dc.embedding <=> %s
                 LIMIT %s
             """, (query_embedding, licitacao_id, query_embedding, limit))
             
@@ -180,11 +209,15 @@ class VectorStore:
                 chunk = {
                     'id': str(row[0]),
                     'text': row[1],
-                    'metadata': row[2] or {},
-                    'similarity_score': float(row[3]),
+                    'page_number': row[2],
+                    'chunk_type': row[3],
+                    'section_title': row[4],
+                    'metadata': row[5] or {},
+                    'document_title': row[6],  # Nome do arquivo
+                    'similarity_score': float(row[7]),
                     'text_score': 0.0,
-                    'hybrid_score': float(row[3]),
-                    'final_score': float(row[3])
+                    'hybrid_score': float(row[7]),
+                    'final_score': float(row[7])
                 }
                 chunks.append(chunk)
             

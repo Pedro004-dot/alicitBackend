@@ -136,6 +136,14 @@ class RAGService:
                 'error': f'Erro interno: {str(e)}'
             }
     
+    def vectorize_documents(self, licitacao_id: str) -> Dict[str, Any]:
+        """
+        Ponto de entrada público para forçar a vetorização dos documentos de uma licitação.
+        Este método serve como um wrapper para a lógica de vetorização interna.
+        """
+        logger.info(f" ricevuto richiesta di vetorizzazione pubblica per licitacao_id: {licitacao_id}")
+        return self._vectorize_licitacao(licitacao_id)
+    
     def _vectorize_licitacao(self, licitacao_id: str) -> Dict[str, Any]:
         """VERSÃO ATUALIZADA: Vetoriza documentos evitando reprocessamento"""
         try:
@@ -157,6 +165,8 @@ class RAGService:
             documentos_para_processar = []
             documentos_ja_processados = 0
             
+            logger.info(f"📋 Analisando {len(documentos)} documentos da licitação...")
+            
             for documento in documentos:
                 documento_data = {
                     'arquivo_url': documento.get('arquivo_nuvem_url', ''),
@@ -164,22 +174,45 @@ class RAGService:
                     'hash_arquivo': documento.get('hash_arquivo', '')
                 }
                 
-                # Verificar se já tem chunks vetorizados OU se já foi processado antes
+                # 🔧 CORREÇÃO: Verificar se já tem chunks vetorizados (critério principal)
                 existing_chunks = self.vector_store.count_document_chunks(documento['id'])
+                
+                # 🔧 CORREÇÃO: Verificar deduplicação apenas como informação adicional
                 already_processed = self.dedup_service.should_process_rag_document(documento['id'], documento_data)
                 
-                if existing_chunks > 0 or not already_processed:
+                # 🔧 NOVA: Verificar status no banco de dados
+                status_processamento = documento.get('status_processamento', '')
+                
+                # 🔧 LOGS DETALHADOS para debug
+                logger.info(f"📄 Documento: {documento['titulo']}")
+                logger.info(f"   - ID: {documento['id']}")
+                logger.info(f"   - Chunks existentes: {existing_chunks}")
+                logger.info(f"   - Status dedup: {'Novo' if already_processed else 'Já visto'}")
+                logger.info(f"   - Status BD: {status_processamento}")
+                logger.info(f"   - URL: {documento.get('arquivo_nuvem_url', 'N/A')[:50]}...")
+                
+                # 🔧 CORREÇÃO: Usar critérios combinados para decidir se pular
+                should_skip = (
+                    existing_chunks > 0 or  # Já tem chunks
+                    status_processamento in ['processado_sem_chunks', 'processado']  # Já foi processado (mesmo sem chunks)
+                )
+                
+                if should_skip:
                     documentos_ja_processados += 1
-                    logger.info(f"⏭️ Documento já processado: {documento['titulo']} ({existing_chunks} chunks)")
+                    if existing_chunks > 0:
+                        logger.info(f"   ✅ PULANDO: Documento já vetorizado ({existing_chunks} chunks)")
+                    else:
+                        logger.info(f"   ✅ PULANDO: Documento já processado (status: {status_processamento})")
                 else:
                     documentos_para_processar.append(documento)
+                    logger.info(f"   🔄 PROCESSANDO: Documento será vetorizado")
             
-            if documentos_ja_processados > 0:
-                logger.info(f"📊 Documentos: {documentos_ja_processados} já processados, {len(documentos_para_processar)} para processar")
+            logger.info(f"📊 RESUMO: {documentos_ja_processados} já processados, {len(documentos_para_processar)} para processar")
             
             # Se todos já processados, retornar sucesso
             if not documentos_para_processar:
                 total_chunks = sum(self.vector_store.count_document_chunks(doc['id']) for doc in documentos)
+                logger.info(f"✅ Todos os documentos já vetorizados. Total chunks: {total_chunks}")
                 return {
                     'success': True,
                     'message': 'Todos os documentos já estavam vetorizados',
@@ -218,6 +251,24 @@ class RAGService:
                     chunks = self.document_processor.create_intelligent_chunks(
                         texto_completo, documento['id']
                     )
+                    
+                    # 🔧 CORREÇÃO: Verificar se texto é muito pequeno para gerar chunks
+                    if not chunks and texto_completo and len(texto_completo.strip()) > 0:
+                        # Documento tem texto mas é muito pequeno para chunks
+                        # Marcar como processado para evitar reprocessamento infinito
+                        logger.warning(f"⚠️ Texto muito pequeno para chunks: {len(texto_completo)} chars")
+                        logger.warning(f"📝 Marcando documento como processado para evitar reprocessamento")
+                        
+                        documento_data = {
+                            'arquivo_url': documento.get('arquivo_nuvem_url', ''),
+                            'tamanho_arquivo': documento.get('tamanho_arquivo', 0),
+                            'hash_arquivo': documento.get('hash_arquivo', '')
+                        }
+                        self.dedup_service.mark_rag_document_processed(documento['id'], documento_data)
+                        self._update_document_status(documento['id'], 'processado_sem_chunks')
+                        
+                        # Continuar para próximo documento sem erro
+                        continue
                     
                     if not chunks:
                         self._update_document_status(documento['id'], 'erro')
@@ -707,3 +758,237 @@ class RAGService:
         except Exception as e:
             logger.error(f"❌ Erro ao obter stats: {e}")
             return {'error': str(e)}
+
+    def diagnose_licitacao_documents(self, licitacao_id: str) -> Dict[str, Any]:
+        """
+        🔍 NOVA FUNÇÃO: Diagnóstico completo dos documentos de uma licitação
+        Verifica se todos os documentos extraídos estão sendo processados no RAG
+        """
+        try:
+            logger.info(f"🔍 Iniciando diagnóstico completo para licitação: {licitacao_id}")
+            
+            # 1. Obter todos os documentos da licitação
+            documentos = self.unified_processor.obter_documentos_licitacao(licitacao_id)
+            
+            if not documentos:
+                return {
+                    'success': False,
+                    'error': 'Nenhum documento encontrado para esta licitação',
+                    'suggestion': 'Execute o processamento de documentos primeiro'
+                }
+            
+            # 2. Analisar cada documento
+            diagnostic_details = []
+            total_chunks = 0
+            docs_vetorizados = 0
+            docs_com_problema = 0
+            
+            for doc in documentos:
+                chunks_count = self.vector_store.count_document_chunks(doc['id'])
+                total_chunks += chunks_count
+                
+                if chunks_count > 0:
+                    docs_vetorizados += 1
+                    status = "✅ Vetorizado"
+                else:
+                    docs_com_problema += 1
+                    status = "❌ NÃO vetorizado"
+                
+                # Verificar tamanho e tipo do arquivo
+                tamanho = doc.get('tamanho_arquivo', 0)
+                tipo = doc.get('tipo_arquivo', 'N/A')
+                url = doc.get('arquivo_nuvem_url', 'N/A')
+                
+                diagnostic_details.append({
+                    'id': doc['id'],
+                    'titulo': doc['titulo'],
+                    'status': status,
+                    'chunks_count': chunks_count,
+                    'tamanho_arquivo': tamanho,
+                    'tipo_arquivo': tipo,
+                    'url_disponivel': bool(url and url != 'N/A'),
+                    'url_preview': url[:60] + '...' if len(str(url)) > 60 else str(url),
+                    'hash_arquivo': doc.get('hash_arquivo', 'N/A')[:16] + '...' if doc.get('hash_arquivo') else 'N/A'
+                })
+            
+            # 3. Estatísticas gerais
+            vectorization_status = self.vector_store.check_vectorization_status(licitacao_id)
+            
+            # 4. Resultado final
+            resultado = {
+                'success': True,
+                'licitacao_id': licitacao_id,
+                'resumo': {
+                    'total_documentos': len(documentos),
+                    'documentos_vetorizados': docs_vetorizados,
+                    'documentos_com_problema': docs_com_problema,
+                    'total_chunks_gerados': total_chunks,
+                    'percentual_sucesso': round((docs_vetorizados / len(documentos)) * 100, 1) if documentos else 0
+                },
+                'vectorization_status_db': vectorization_status,
+                'documentos_detalhes': diagnostic_details,
+                'recomendacoes': []
+            }
+            
+            # 5. Gerar recomendações
+            if docs_com_problema > 0:
+                resultado['recomendacoes'].append(
+                    f"🔧 {docs_com_problema} documento(s) não estão vetorizados. Execute o processamento RAG novamente."
+                )
+            
+            if total_chunks == 0:
+                resultado['recomendacoes'].append(
+                    "⚠️ Nenhum chunk foi gerado. Verifique se os documentos são PDFs válidos."
+                )
+            
+            if total_chunks < len(documentos) * 5:  # Menos de 5 chunks por documento é suspeito
+                resultado['recomendacoes'].append(
+                    "⚠️ Poucos chunks gerados por documento. Verifique a qualidade dos PDFs."
+                )
+            
+            # 6. Log do resultado
+            logger.info(f"📊 Diagnóstico concluído:")
+            logger.info(f"   - Total documentos: {len(documentos)}")
+            logger.info(f"   - Vetorizados: {docs_vetorizados}")
+            logger.info(f"   - Com problema: {docs_com_problema}")
+            logger.info(f"   - Total chunks: {total_chunks}")
+            
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no diagnóstico: {e}")
+            return {
+                'success': False,
+                'error': f'Erro no diagnóstico: {str(e)}'
+            }
+
+    def force_reprocess_documents(self, licitacao_id: str, documento_ids: List[str] = None) -> Dict[str, Any]:
+        """
+        🔧 NOVA FUNÇÃO: Força o reprocessamento de documentos específicos
+        Útil quando alguns documentos não foram vetorizados corretamente
+        """
+        try:
+            logger.info(f"🔧 Forçando reprocessamento para licitação: {licitacao_id}")
+            
+            # 1. Obter documentos
+            documentos = self.unified_processor.obter_documentos_licitacao(licitacao_id)
+            
+            if not documentos:
+                return {
+                    'success': False,
+                    'error': 'Nenhum documento encontrado para esta licitação'
+                }
+            
+            # 2. Filtrar documentos se IDs específicos foram fornecidos
+            if documento_ids:
+                documentos = [doc for doc in documentos if doc['id'] in documento_ids]
+                logger.info(f"🎯 Filtrando para {len(documentos)} documentos específicos")
+            
+            # 3. Limpar chunks existentes dos documentos selecionados
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    for documento in documentos:
+                        # Remover chunks existentes
+                        cursor.execute("""
+                            DELETE FROM documentos_chunks 
+                            WHERE documento_id = %s
+                        """, (documento['id'],))
+                        
+                        # Resetar status de vetorização
+                        cursor.execute("""
+                            UPDATE documentos_licitacao 
+                            SET vetorizado = false, 
+                                chunks_count = 0,
+                                status_processamento = 'pendente',
+                                updated_at = NOW()
+                            WHERE id = %s
+                        """, (documento['id'],))
+                        
+                        # Limpar cache de deduplicação
+                        self.dedup_service.clear_rag_document_cache(documento['id'])
+                        
+                        logger.info(f"🗑️ Limpou dados RAG para: {documento['titulo']}")
+                    
+                    conn.commit()
+            
+            logger.info(f"✅ {len(documentos)} documento(s) limpos, iniciando reprocessamento...")
+            
+            # 4. Forçar reprocessamento
+            result = self._vectorize_licitacao(licitacao_id)
+            
+            return {
+                'success': True,
+                'message': f'Reprocessamento forçado concluído',
+                'documentos_limpos': len(documentos),
+                'vectorization_result': result
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Erro no reprocessamento forçado: {e}")
+            return {
+                'success': False,
+                'error': f'Erro no reprocessamento: {str(e)}'
+            }
+
+    def clear_all_rag_data(self, licitacao_id: str) -> Dict[str, Any]:
+        """
+        🗑️ NOVA FUNÇÃO: Limpa todos os dados RAG de uma licitação
+        CUIDADO: Esta função remove TODOS os chunks e embeddings
+        """
+        try:
+            logger.warning(f"🗑️ LIMPEZA COMPLETA RAG para licitação: {licitacao_id}")
+            
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # 1. Contar dados antes da limpeza
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM documentos_chunks 
+                        WHERE licitacao_id = %s
+                    """, (licitacao_id,))
+                    chunks_before = cursor.fetchone()[0]
+                    
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM documentos_licitacao 
+                        WHERE licitacao_id = %s AND vetorizado = true
+                    """, (licitacao_id,))
+                    docs_vectorized_before = cursor.fetchone()[0]
+                    
+                    # 2. Remover todos os chunks
+                    cursor.execute("""
+                        DELETE FROM documentos_chunks 
+                        WHERE licitacao_id = %s
+                    """, (licitacao_id,))
+                    
+                    # 3. Resetar status de todos os documentos
+                    cursor.execute("""
+                        UPDATE documentos_licitacao 
+                        SET vetorizado = false, 
+                            chunks_count = 0,
+                            status_processamento = 'pendente',
+                            texto_extraido = NULL,
+                            updated_at = NOW()
+                        WHERE licitacao_id = %s
+                    """, (licitacao_id,))
+                    
+                    docs_updated = cursor.rowcount
+                    conn.commit()
+                    
+                    logger.warning(f"🗑️ LIMPEZA CONCLUÍDA:")
+                    logger.warning(f"   - {chunks_before} chunks removidos")
+                    logger.warning(f"   - {docs_updated} documentos resetados")
+                    logger.warning(f"   - {docs_vectorized_before} documentos vetorizados antes")
+                    
+                    return {
+                        'success': True,
+                        'message': 'Limpeza completa concluída',
+                        'chunks_removidos': chunks_before,
+                        'documentos_resetados': docs_updated,
+                        'documentos_vetorizados_antes': docs_vectorized_before
+                    }
+                    
+        except Exception as e:
+            logger.error(f"❌ Erro na limpeza completa: {e}")
+            return {
+                'success': False,
+                'error': f'Erro na limpeza: {str(e)}'
+            }

@@ -52,22 +52,27 @@ def get_bid_detail():
     """
     return controller.get_bid_detail_by_query()
 
-@bid_routes.route('/items', methods=['GET'])
+@bid_routes.route('/items', methods=['GET', 'POST'])
 def get_bid_items():
     """
-    GET /api/bids/items?pncp_id=<id> - Buscar itens de licitações
+    GET /api/bids/items?pncp_id=<id> - Buscar itens de licitações (somente consulta)
+    POST /api/bids/items?pncp_id=<id> - Buscar itens e garantir que a licitação e seus itens sejam salvos no banco.
     
     DESCRIÇÃO:
-    - Lista todos os itens de uma licitação específica
-    - Usado pelo frontend para mostrar detalhes dos produtos/serviços
-    - Inclui descrição, quantidade, valores unitários
+    - Lista todos os itens de uma licitação específica.
+    - O método POST recebe o objeto da licitação no corpo para garantir que os dados mais atualizados (do frontend)
+      sejam usados para criar ou atualizar a licitação no banco antes de buscar e salvar os itens.
+    - O método GET apenas consulta os itens sem garantir o salvamento.
     
     PARÂMETROS (Query):
-    - pncp_id: ID único da licitação no PNCP (obrigatório)
+    - pncp_id: ID único da licitação no PNCP (obrigatório para GET e POST)
+    
+    CORPO (Body JSON para POST):
+    - Objeto completo da licitação, como visto no frontend.
     
     RETORNA:
-    - Array de itens com detalhes completos
-    - Valores unitários e totais por item
+    - Array de itens com detalhes completos.
+    - No caso de POST, a operação de salvamento ocorre no backend.
     """
     return controller.get_bid_items_by_query()
 

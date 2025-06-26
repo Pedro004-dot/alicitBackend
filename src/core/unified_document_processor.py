@@ -1570,72 +1570,41 @@ class UnifiedDocumentProcessor:
             url_documentos = self.construir_url_documentos(bid)
             logger.info(f"🔗 SYNC: URL documentos: {url_documentos}")
             
-            # PASSO 3: Buscar documentos da API
-            documentos_api = self.buscar_documentos_api(url_documentos)
-            if not documentos_api:
+            # PASSO 3: Buscar e processar documentos da API
+            # CORREÇÃO: Chamando o método correto que processa a resposta da API
+            documentos_processados = self.processar_resposta_pncp(url_documentos, licitacao_id)
+            
+            if not documentos_processados:
+                logger.warning(f"Nenhum documento encontrado ou processado da API PNCP para {pncp_id}")
                 return {
-                    'success': False,
-                    'error': 'Nenhum documento encontrado na API PNCP'
+                    'success': True,
+                    'status': 'no_documents_found',
+                    'message': 'Nenhum documento encontrado na API PNCP, mas o processo não falhou.'
                 }
             
-            logger.info(f"📄 SYNC: {len(documentos_api)} documentos encontrados na API")
+            logger.info(f"📄 SYNC: {len(documentos_processados)} documentos encontrados e processados da API")
+
+            # PASSO 4: Salvar no banco de dados
+            resultado_banco = self.salvar_documentos_no_banco(documentos_processados)
             
-            # PASSO 4: Processar cada documento
-            documentos_processados = []
-            
-            for i, doc_info in enumerate(documentos_api):
-                try:
-                    logger.info(f"🔄 SYNC: Processando documento {i+1}/{len(documentos_api)}: {doc_info.get('nome', 'sem nome')}")
-                    
-                    # Download do documento
-                    doc_content = self.baixar_documento_individual(doc_info['url'])
-                    if not doc_content:
-                        logger.warning(f"⚠️ SYNC: Falha no download de {doc_info.get('nome')}")
-                        continue
-                    
-                    # Processar e salvar documento
-                    resultado_processamento = self._salvar_arquivo_final(
-                        arquivo_content=doc_content,
-                        nome_original=doc_info['nome'],
-                        licitacao_id=licitacao_id,
-                        sequencial=i+1
-                    )
-                    
-                    if resultado_processamento:
-                        documentos_processados.extend(resultado_processamento)
-                        logger.info(f"✅ SYNC: Documento processado: {doc_info['nome']}")
-                    
-                except Exception as e:
-                    logger.error(f"❌ SYNC: Erro ao processar documento {doc_info.get('nome')}: {e}")
-                    continue
-            
-            # PASSO 5: Salvar no banco de dados
-            if documentos_processados:
-                resultado_banco = self.salvar_documentos_no_banco(documentos_processados)
+            if resultado_banco['success']:
+                logger.info(f"🎉 SYNC: Processamento concluído! {resultado_banco['documentos_salvos']} documentos salvos")
                 
-                if resultado_banco['success']:
-                    logger.info(f"🎉 SYNC: Processamento concluído! {resultado_banco['documentos_salvos']} documentos salvos")
-                    
-                    return {
-                        'success': True,
-                        'status': 'completed',
-                        'message': f'{resultado_banco["documentos_salvos"]} documentos processados com sucesso',
-                        'documentos_processados': resultado_banco['documentos_salvos'],
-                        'total_encontrados': len(documentos_api)
-                    }
-                else:
-                    return {
-                        'success': False,
-                        'error': f'Erro ao salvar no banco: {resultado_banco.get("error")}'
-                    }
+                return {
+                    'success': True,
+                    'status': 'completed',
+                    'message': f'{resultado_banco["documentos_salvos"]} documentos processados com sucesso',
+                    'documentos_processados': resultado_banco['documentos_salvos'],
+                    'total_encontrados': len(documentos_processados)
+                }
             else:
                 return {
                     'success': False,
-                    'error': 'Nenhum documento foi processado com sucesso'
+                    'error': f'Erro ao salvar no banco: {resultado_banco.get("error")}'
                 }
-            
+
         except Exception as e:
-            logger.error(f"❌ SYNC: Erro geral no processamento: {e}")
+            logger.error(f"❌ SYNC: Erro geral no processamento: {e}", exc_info=True)
             return {
                 'success': False,
                 'error': f'Erro no processamento síncrono: {str(e)}'

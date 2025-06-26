@@ -236,8 +236,7 @@ def _register_blueprints(app: Flask) -> None:
         from routes.system_routes import system_routes
         from routes.rag_routes import create_rag_routes # ✅ NOVO
         from routes.auth_routes import auth_routes # ✅ AUTENTICAÇÃO
-        from routes.pncp_routes import pncp_routes # ✅ PNCP
-        from routes.search_routes import search_routes # ✅ BUSCA UNIFICADA
+        from routes.licitacao_routes import licitacao_routes # ✅ NOVA BUSCA DE LICITAÇÕES
         from routes.quality_match_routes import quality_match_routes # 🎯 QUALITY MATCHING
   
         # Registrar blueprints
@@ -246,8 +245,7 @@ def _register_blueprints(app: Flask) -> None:
         app.register_blueprint(bid_routes)
         app.register_blueprint(match_routes)
         app.register_blueprint(quality_match_routes)  # 🎯 Quality Matching
-        app.register_blueprint(pncp_routes)  # ✅ PNCP
-        app.register_blueprint(search_routes)  # ✅ BUSCA UNIFICADA
+        app.register_blueprint(licitacao_routes)  # ✅ NOVA BUSCA DE LICITAÇÕES
     
         app.register_blueprint(system_routes)
         
@@ -269,7 +267,7 @@ def _register_blueprints(app: Flask) -> None:
         app.logger.info("  ✅ Bids: 10 endpoints (/api/bids/*)")
         app.logger.info("  ✅ Matches: 4 endpoints (/api/matches/*)")
         app.logger.info("  🎯 Quality Matches: 4 endpoints (/api/quality-matches/*)")
-        app.logger.info("  ✅ PNCP: 8 endpoints (/api/pncp/*)")
+        app.logger.info("  ✅ Licitacoes: 1 endpoint (/api/licitacoes/buscar)")
         app.logger.info("  ✅ System: 7 endpoints (/api/status/*, /api/config/*, etc)")
         app.logger.info("  🆕 Chat: 8 endpoints (/api/licitacoes/*/chat, /api/admin/rag)")
         app.logger.info("  📊 TOTAL: 76 endpoints ativos")

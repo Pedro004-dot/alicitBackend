@@ -10,6 +10,10 @@ import requests
 import time
 from typing import Dict, Any, Optional
 from config.llm_config import LLMConfig
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente
+load_dotenv('config.env')
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +30,8 @@ class OllamaMatchValidator:
         self.config = LLMConfig.get_ollama_config()
         self._setup_ollama()
         
-        # Thresholds para validação
-        self.HIGH_SCORE_THRESHOLD = 0.70  # Valida matches a partir de 70% (OLLAMA)
+        # Thresholds para validação (ajustados conforme config.env)
+        self.HIGH_SCORE_THRESHOLD = float(os.getenv('SIMILARITY_THRESHOLD_PHASE1', '0.70'))  # Threshold do config.env
         self.LLM_CONFIDENCE_THRESHOLD = 0.65  # Aprovação LLM
         
     def _setup_ollama(self):

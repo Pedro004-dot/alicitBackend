@@ -20,7 +20,7 @@ load_dotenv()
 PNCP_BASE_URL_PUBLICACAO = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 PNCP_BASE_URL_ITENS = "https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{anoCompra}/{sequencialCompra}/itens"
 PNCP_PAGE_SIZE = 50  # Quantidade de licitações por página
-PNCP_MAX_PAGES = 5   # Limite de páginas por UF para evitar sobrecarga
+PNCP_MAX_PAGES = 10  # 🔥 AUMENTADO: Mais páginas para busca semanal
 
 # --- Estados brasileiros ---
 ESTADOS_BRASIL = [

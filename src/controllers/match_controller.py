@@ -229,20 +229,58 @@ class MatchController:
             }), 500
 
     def get_recent_matches(self):
-        """GET /api/matches/recent - Matches mais recentes"""
+        """GET /api/matches/recent - Matches recentes com reavaliação LLM por período"""
         try:
+            # Parâmetros da requisição
             limit = request.args.get('limit', 10, type=int)
+            days_back = request.args.get('days_back', 7, type=int)
+            enable_llm_revalidation = request.args.get('enable_llm', 'false').lower() == 'true'
+            update_existing = request.args.get('update_existing', 'false').lower() == 'true'
             
-            logger.info(f"🔍 Buscando {limit} matches mais recentes")
+            logger.info(f"🔍 Buscando matches dos últimos {days_back} dias com LLM: {enable_llm_revalidation}")
             
-            matches = self.match_repository.find_recent_matches(limit)
-            
-            return jsonify({
-                'success': True,
-                'data': matches,
-                'total': len(matches),
-                'limit': limit
-            }), 200
+            if enable_llm_revalidation:
+                # Usar service para reavaliação com LLM
+                result = self.match_service.reevaluate_recent_matches_with_llm(
+                    days_back=days_back,
+                    limit=limit,
+                    update_existing=update_existing
+                )
+                
+                return jsonify({
+                    'success': True,
+                    'data': result.get('matches', []),
+                    'total': len(result.get('matches', [])),
+                    'llm_validation': {
+                        'enabled': True,
+                        'validated': result.get('llm_validated_count', 0),
+                        'approved': result.get('llm_approved_count', 0),
+                        'rejected': result.get('llm_rejected_count', 0),
+                        'updated': result.get('updated_matches', 0) if update_existing else 0
+                    },
+                    'filters': {
+                        'limit': limit,
+                        'days_back': days_back,
+                        'update_existing': update_existing
+                    }
+                }), 200
+            else:
+                # Busca normal sem LLM
+                matches = self.match_repository.find_recent_matches_by_period(limit, days_back)
+                
+                return jsonify({
+                    'success': True,
+                    'data': matches,
+                    'total': len(matches),
+                    'llm_validation': {
+                        'enabled': False,
+                        'message': 'Use enable_llm=true para ativar validação LLM'
+                    },
+                    'filters': {
+                        'limit': limit,
+                        'days_back': days_back
+                    }
+                }), 200
             
         except Exception as e:
             logger.error(f"❌ Erro ao buscar matches recentes: {e}")
@@ -416,5 +454,67 @@ class MatchController:
             return jsonify({
                 'success': False,
                 'error': 'Erro interno ao buscar matches agrupados',
+                'message': str(e)
+            }), 500
+
+    def reevaluate_bids_by_date(self):
+        """POST /api/matches/reevaluate-bids - Reavaliar licitações de uma data específica"""
+        try:
+            # Obter dados do body da requisição
+            from flask import request
+            data = request.get_json()
+            
+            if not data or 'data' not in data:
+                return jsonify({
+                    'success': False,
+                    'error': 'Data obrigatória',
+                    'message': 'Informe a data no formato YYYY-MM-DD no body da requisição'
+                }), 400
+            
+            target_date = data['data']
+            enable_llm = data.get('enable_llm', True)
+            limit = data.get('limit', 50)
+            
+            logger.info(f"🔍 Reavaliando licitações da data {target_date} com LLM: {enable_llm}")
+            
+            # Usar service para reavaliar licitações por data
+            result = self.match_service.reevaluate_bids_by_date(
+                target_date=target_date,
+                enable_llm=enable_llm,
+                limit=limit
+            )
+            
+            return jsonify({
+                'success': True,
+                'data': result.get('matches', []),
+                'total_matches': len(result.get('matches', [])),
+                'processing_info': {
+                    'target_date': target_date,
+                    'total_bids_found': result.get('total_bids_found', 0),
+                    'total_bids_processed': result.get('total_bids_processed', 0),
+                    'enable_llm': enable_llm
+                },
+                'llm_validation': {
+                    'enabled': enable_llm,
+                    'validated': result.get('llm_validated_count', 0),
+                    'approved': result.get('llm_approved_count', 0),
+                    'rejected': result.get('llm_rejected_count', 0)
+                } if enable_llm else {'enabled': False},
+                'message': f"Processadas {result.get('total_bids_processed', 0)} licitações da data {target_date}"
+            }), 200
+            
+        except ValueError as e:
+            logger.warning(f"❌ Erro de validação: {e}")
+            return jsonify({
+                'success': False,
+                'error': 'Erro de validação',
+                'message': str(e)
+            }), 400
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao reavaliar licitações por data: {e}")
+            return jsonify({
+                'success': False,
+                'error': 'Erro interno do servidor',
                 'message': str(e)
             }), 500 

@@ -108,20 +108,63 @@ def get_all_matches():
     """
     return match_controller.get_all_matches()
 
-@match_routes.route('/recent', methods=['GET'])
+@match_routes.route('/recent', methods=['GET', 'POST'])
 def get_recent_matches():
     """
-    GET /api/matches/recent - Correspondências mais recentes (público)
+    GET /api/matches/recent - Matches recentes com validação LLM opcional (público)
     
     DESCRIÇÃO:
-    - Lista os matches mais recentes do sistema
-    - Usado para dashboards públicos ou estatísticas gerais
+    - Lista matches recentes com opção de reavaliação LLM
+    - Permite especificar período de busca customizável
+    - Validação LLM reavaliar e/ou atualizar matches existentes
     
     PARÂMETROS (Query):
     - limit: Quantidade máxima de registros (opcional, padrão: 10)
+    - days_back: Quantos dias atrás buscar matches (opcional, padrão: 7)
+    - enable_llm: Ativar validação LLM ('true'/'false', padrão: 'false')
+    - update_existing: Atualizar scores dos matches com LLM ('true'/'false', padrão: 'false')
+    
+    EXEMPLOS DE USO:
+    - GET /api/matches/recent?limit=20&days_back=30
+      (busca 20 matches dos últimos 30 dias sem LLM)
+    
+    - GET /api/matches/recent?days_back=14&enable_llm=true
+      (reavalia matches dos últimos 14 dias com LLM, sem atualizar)
+    
+    - GET /api/matches/recent?enable_llm=true&update_existing=true
+      (reavalia e atualiza matches dos últimos 7 dias com LLM)
     
     RETORNA:
-    - Array de matches mais recentes com dados completos
+    - Array de matches com dados completos
+    - Estatísticas de validação LLM (se ativada)
+    - Informações sobre matches atualizados (se update_existing=true)
+    
+    RESPOSTA COM LLM:
+    {
+        "success": true,
+        "data": [...matches com llm_validation...],
+        "total": 15,
+        "llm_validation": {
+            "enabled": true,
+            "validated": 15,
+            "approved": 12,
+            "rejected": 3,
+            "updated": 8
+        },
+        "filters": {...}
+    }
+    
+    RESPOSTA SEM LLM:
+    {
+        "success": true,
+        "data": [...matches normais...],
+        "total": 15,
+        "llm_validation": {
+            "enabled": false,
+            "message": "Use enable_llm=true para ativar validação LLM"
+        },
+        "filters": {...}
+    }
     """
     return match_controller.get_recent_matches()
 
@@ -204,5 +247,55 @@ def get_high_quality_matches():
     - Array de matches de alta qualidade
     """
     return match_controller.get_high_quality_matches()
+
+@match_routes.route('/reevaluate-bids', methods=['POST'])
+def reevaluate_bids_by_date():
+    """
+    POST /api/matches/reevaluate-bids - Reavaliar licitações de uma data específica
+    
+    DESCRIÇÃO:
+    - Reavaliar todas as licitações de uma data específica contra empresas cadastradas
+    - Executa o processo completo de matching com validação LLM
+    - Salva novos matches aprovados pelo LLM no banco de dados
+    
+    BODY (JSON):
+    - data: Data no formato YYYY-MM-DD (obrigatório)
+    - enable_llm: Ativar validação LLM (opcional, padrão: true)
+    - limit: Limite de licitações para processar (opcional, padrão: 50)
+    
+    EXEMPLO DE BODY:
+    {
+        "data": "2025-06-25",
+        "enable_llm": true,
+        "limit": 30
+    }
+    
+    RETORNA:
+    - Array de novos matches encontrados e salvos
+    - Estatísticas do processamento (licitações encontradas, processadas)
+    - Informações de validação LLM (aprovados, rejeitados)
+    - Detalhes completos das licitações e empresas matched
+    
+    RESPOSTA:
+    {
+        "success": true,
+        "data": [...matches...],
+        "total_matches": 15,
+        "processing_info": {
+            "target_date": "2025-06-25",
+            "total_bids_found": 14,
+            "total_bids_processed": 14,
+            "enable_llm": true
+        },
+        "llm_validation": {
+            "enabled": true,
+            "validated": 45,
+            "approved": 15,
+            "rejected": 30
+        },
+        "message": "Processadas 14 licitações da data 2025-06-25"
+    }
+    """
+    return match_controller.reevaluate_bids_by_date()
 
  

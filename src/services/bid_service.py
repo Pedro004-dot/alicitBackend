@@ -4,8 +4,11 @@ Lógica de negócio para operações com licitações
 """
 import logging
 from typing import List, Dict, Any, Tuple, Optional
-from repositories.licitacao_repository import LicitacaoRepository
+from repositories.bid_repository import BidRepository
+from repositories.licitacao_repository import LicitacaoPNCPRepository
 from config.database import db_manager
+import requests
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +16,10 @@ class BidService:
     """Service para regras de negócio de licitações"""
     
     def __init__(self):
-        self.licitacao_repo = LicitacaoRepository(db_manager)
+        # Repositório para operações no banco de dados local
+        self.licitacao_repo = BidRepository(db_manager)
+        # Repositório para busca na API do PNCP
+        self.pncp_repo = LicitacaoPNCPRepository()
     
     def get_all_bids(self, limit: Optional[int] = None) -> Tuple[List[Dict[str, Any]], str]:
         """
@@ -40,15 +46,96 @@ class BidService:
             return None
     
     def get_bid_by_pncp_id(self, pncp_id: str) -> Optional[Dict[str, Any]]:
-        """Buscar licitação por PNCP ID com formatação"""
+        """Buscar licitação por PNCP ID com formatação, com fallback para API do PNCP."""
         try:
+            # 1. Tenta buscar no banco de dados local primeiro
             bid = self.licitacao_repo.find_by_pncp_id(pncp_id)
             if bid:
+                logger.info(f"Licitação {pncp_id} encontrada no banco de dados local.")
                 return self._format_bid_for_frontend(bid)
+
+            # 2. Se não encontrou, busca na API do PNCP
+            logger.info(f"Licitação {pncp_id} não encontrada localmente. Buscando na API do PNCP...")
+            detailed_bid = self.pncp_repo.buscar_licitacao_detalhada(pncp_id)
+            
+            if detailed_bid:
+                logger.info(f"✅ Detalhes da licitação {pncp_id} encontrados na API do PNCP.")
+                converted_bid = self._convert_api_bid_data(detailed_bid, pncp_id)
+                # Retorna os dados formatados para o frontend. A formatação final acontece aqui.
+                return self._format_bid_for_frontend(converted_bid)
+
+            logger.warning(f"Licitação {pncp_id} não encontrada em nenhuma fonte (local ou API).")
             return None
+
         except Exception as e:
-            logger.error(f"Erro ao buscar licitação por PNCP {pncp_id}: {e}")
+            logger.error(f"Erro ao buscar licitação por PNCP {pncp_id}: {e}", exc_info=True)
             return None
+
+    def _convert_api_bid_data(self, raw_data: Dict[str, Any], fallback_pncp_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Converte dados da API de detalhes para um formato similar ao do banco de dados."""
+        from datetime import datetime
+        
+        # Extrair informações do órgão e unidade (nome na API pode variar)
+        orgao_info = (
+            raw_data.get('orgaoEntidade')
+            or raw_data.get('orgao')
+            or {}
+        )
+        unidade_info = raw_data.get('unidadeOrgao', {})
+        
+        # Extrair o PNCP ID (algumas variações de campo foram observadas na API)
+        pncp_id = (
+            raw_data.get('numeroControlePNCP')
+            or raw_data.get('numeroControlePncp')  # variação camelCase
+            or raw_data.get('numeroControle')      # fallback observado em alguns endpoints
+            or fallback_pncp_id                    # último recurso: usar o PNCP ID recebido como parâmetro externo
+        )
+
+        if not pncp_id:
+            logger.error("❌ PNCP ID não encontrado nos dados da API, mesmo após tentativas de fallback")
+            return None
+        
+        # Fallback para CNPJ usando PNCP-ID
+        cnpj_fallback = None
+        try:
+            parsed_aux = self.pncp_repo._parse_pncp_id(pncp_id)
+            if parsed_aux:
+                cnpj_fallback = parsed_aux.get('cnpj')
+        except Exception:
+            pass
+        
+        # Construir o dicionário com os dados convertidos
+        return {
+            'pncp_id': pncp_id,  # Campo principal para identificação
+            'numero_controle_pncp': pncp_id,  # Campo duplicado para compatibilidade
+            'objeto_compra': raw_data.get('objetoCompra') or raw_data.get('objeto_compra'),
+            'orgao_cnpj': orgao_info.get('cnpj') or cnpj_fallback,
+            'razao_social': orgao_info.get('razaoSocial'),
+            'uf': unidade_info.get('ufSigla'),
+            'uf_nome': unidade_info.get('ufNome'),
+            'nome_unidade': unidade_info.get('nomeUnidade'),
+            'municipio_nome': unidade_info.get('municipioNome'),
+            'codigo_ibge': unidade_info.get('codigoIbge'),
+            'codigo_unidade': unidade_info.get('codigo'),
+            'status': raw_data.get('situacaoCompraNome'),
+            'link_sistema_origem': raw_data.get('linkSistemaOrigem'),
+            'data_publicacao': raw_data.get('dataPublicacaoPncp'),
+            'valor_total_estimado': raw_data.get('valorTotalEstimado'),
+            'created_at': datetime.now(),
+            'updated_at': datetime.now(),
+            'numero_compra': raw_data.get('numero'),
+            'processo': raw_data.get('numeroProcesso'),
+            'valor_total_homologado': raw_data.get('valorTotalHomologado'),
+            'data_abertura_proposta': raw_data.get('dataAberturaProposta'),
+            'data_encerramento_proposta': raw_data.get('dataEncerramentoProposta'),
+            'modo_disputa_id': raw_data.get('modoDisputa', {}).get('id'),
+            'modo_disputa_nome': raw_data.get('modoDisputa', {}).get('nome'),
+            'srp': raw_data.get('srp'),
+            'link_processo_eletronico': raw_data.get('uriSistemaOrigem'),
+            'modalidade_nome': raw_data.get('modalidadeNome'),
+            'ano_compra': self._extract_year_from_pncp_id(pncp_id),
+            'sequencial_compra': self._extract_sequential_from_pncp_id(pncp_id)
+        }
     
     def search_bids_by_object(self, search_term: str, limit: int = 50) -> List[Dict[str, Any]]:
         """
@@ -834,35 +921,171 @@ class BidService:
             logger.error(f"Erro ao calcular estatísticas aprimoradas: {e}")
             return {}, f"Erro ao calcular estatísticas: {str(e)}"
     
-    def get_bid_items(self, pncp_id: str) -> Tuple[List[Dict[str, Any]], str]:
+    def get_bid_items(self, pncp_id: str, licitacao_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Buscar itens de uma licitação por PNCP ID
-        
-        Args:
-            pncp_id: ID da licitação no PNCP
-            
-        Returns:
-            Tupla com lista de itens e mensagem de status
+        Buscar itens de uma licitação, garantindo que a licitação e os itens sejam salvos no banco.
+        Se `licitacao_data` for fornecido (via POST), usa esses dados para criar/atualizar a licitação.
+        Caso contrário (via GET), busca os detalhes na API do PNCP.
         """
         try:
-            # Primeiro, buscar a licitação pelo pncp_id
-            bid = self.licitacao_repo.find_by_pncp_id(pncp_id)
-            
-            if not bid:
-                return [], "Licitação não encontrada"
-            
-            # Buscar itens da licitação usando o ID interno
-            items = self.licitacao_repo.find_items_by_licitacao_id(bid['id'])
-            
-            # Formatar itens para o frontend
-            formatted_items = self._format_items_for_frontend(items)
-            
-            message = f"{len(formatted_items)} itens encontrados para a licitação {pncp_id}"
-            return formatted_items, message
-            
+            if not pncp_id:
+                return {'success': False, 'message': 'PNCP ID não fornecido'}
+
+            # 1. Verificar se a licitação já existe no banco
+            licitacao_local = self.licitacao_repo.find_by_pncp_id(pncp_id)
+
+            # 2. Se não existir, criar a partir dos dados do POST ou da API
+            if not licitacao_local:
+                logger.info(f"Licitação {pncp_id} não encontrada localmente. Tentando salvar...")
+                converted_bid = None
+
+                if licitacao_data:
+                    logger.info(f"Usando dados da licitação providos pelo frontend para {pncp_id}")
+                    converted_bid = self._convert_frontend_bid_data(licitacao_data)
+                else:
+                    logger.info(f"Buscando detalhes da API PNCP para {pncp_id} pois não foram providos.")
+                    detailed_bid = self.pncp_repo.buscar_licitacao_detalhada(pncp_id)
+                    if detailed_bid:
+                        converted_bid = self._convert_api_bid_data(detailed_bid, pncp_id)
+
+                if not converted_bid:
+                    msg = "Dados da licitação não puderam ser obtidos ou convertidos."
+                    logger.error(f"❌ {msg} para PNCP ID: {pncp_id}")
+                    return {'success': False, 'message': msg}
+
+                try:
+                    # Usar create_or_update para evitar duplicação
+                    licitacao_local = self.licitacao_repo.create_or_update(converted_bid, 'numero_controle_pncp')
+                    logger.info(
+                        f"✅ Licitação {pncp_id} salva/atualizada com sucesso. ID local: {licitacao_local.get('id')}")
+                except Exception as e:
+                    logger.error(f"❌ Falha ao salvar licitação {pncp_id}: {e}", exc_info=True)
+                    return {'success': False, 'message': f"Erro ao salvar licitação: {e}"}
+
+            licitacao_db_id = licitacao_local.get('id')
+            if not licitacao_db_id:
+                return {'success': False, 'message': 'Não foi possível obter o ID da licitação no banco de dados.'}
+
+            # 3. Buscar itens (da API, pois são dinâmicos) e salvá-los
+            api_items = self._fetch_items_from_pncp_api(pncp_id)
+
+            if not api_items:
+                logger.info(f"Nenhum item encontrado na API para {pncp_id}")
+                return {
+                    'success': True,
+                    'data': {'itens': [], 'licitacao': self._format_bid_for_frontend(licitacao_local)},
+                    'message': 'Licitação encontrada, mas sem itens na API do PNCP.'
+                }
+
+            logger.info(f"✅ {len(api_items)} itens encontrados na API para {pncp_id}. Tentando salvar...")
+
+            try:
+                db_items = [
+                    {
+                        'licitacao_id': licitacao_db_id,
+                        'numero_item': item.get('numeroItem'),
+                        'descricao': item.get('descricao'),
+                        'quantidade': item.get('quantidade'),
+                        'unidade_medida': item.get('unidadeMedida'),
+                        'valor_unitario_estimado': item.get('valorUnitarioEstimado'),
+                        'situacao_item_id': item.get('situacaoCompraItemId'),
+                        'criterio_julgamento_id': item.get('criterioJulgamentoId')
+                    } for item in api_items]
+                # Aqui, estamos usando um método hipotético `create_or_update_bulk_items`
+                # que precisa ser implementado no repositório.
+                # Ele deve inserir ou atualizar itens com base em um conjunto de chaves.
+                num_saved = self.licitacao_repo.create_or_update_bulk_items(db_items, ['licitacao_id', 'numero_item'])
+                logger.info(f"✅ {num_saved} itens salvos/atualizados para a licitação ID {licitacao_db_id}")
+            except Exception as e:
+                logger.error(f"⚠️ Falha ao salvar itens para a licitação ID {licitacao_db_id}: {e}",
+                             exc_info=True)
+                # Não falhar a requisição inteira, apenas logar o erro. O usuário ainda quer ver os itens.
+
+            return {
+                'success': True,
+                'data': {'itens': self._format_items_for_frontend(api_items),
+                         'licitacao': self._format_bid_for_frontend(licitacao_local)},
+                'message': f"{len(api_items)} itens encontrados e processados."
+            }
+
         except Exception as e:
-            logger.error(f"Erro ao buscar itens da licitação {pncp_id}: {e}")
-            return [], f"Erro ao buscar itens da licitação: {str(e)}"
+            logger.error(f"❌ Erro ao buscar itens da licitação {pncp_id}: {e}", exc_info=True)
+            return {'success': False, 'message': f"Erro ao buscar itens: {str(e)}"}
+
+    def _convert_frontend_bid_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Converte dados da licitação vindos do frontend para o formato do banco de dados."""
+        pncp_id = data.get('numero_controle_pncp') or data.get('pncp_id')
+        orgao_entidade = data.get('orgao_entidade') or data.get('orgaoEntidade') or {}
+        unidade_orgao = data.get('unidade_orgao') or data.get('unidadeOrgao') or {}
+
+        return {
+            'pncp_id': pncp_id,  # Campo principal para identificação
+            'numero_controle_pncp': pncp_id,
+            'objeto_compra': data.get('objeto_compra') or data.get('objetoCompra'),
+            'valor_total_estimado': data.get('valor_total_estimado') or data.get('valorTotalEstimado'),
+            'modalidade_nome': data.get('modalidade_nome') or data.get('modalidadeNome'),
+            'situacao_compra_nome': data.get('situacao_compra_nome') or data.get('situacaoCompraNome'),
+            'data_publicacao_pncp': data.get('data_publicacao_pncp') or data.get('dataPublicacaoPncp'),
+            'data_abertura_proposta': data.get('data_abertura_proposta') or data.get('dataAberturaProposta'),
+            'data_encerramento_proposta': data.get('data_encerramento_proposta') or data.get('dataEncerramentoProposta'),
+            'link_sistema_origem': data.get('link_sistema_origem') or data.get('linkSistemaOrigem'),
+            'orgao_cnpj': orgao_entidade.get('cnpj'),
+            'razao_social': orgao_entidade.get('razaoSocial'),
+            'nome_unidade': unidade_orgao.get('nomeUnidade'),
+            'municipio_nome': unidade_orgao.get('municipioNome'),
+            'uf': unidade_orgao.get('ufSigla') or unidade_orgao.get('uf'),
+            'ano_compra': self._extract_year_from_pncp_id(pncp_id),
+            'sequencial_compra': self._extract_sequential_from_pncp_id(pncp_id),
+        }
+
+    def _convert_api_item_data(self, api_item: Dict[str, Any], licitacao_db_id: int) -> Dict[str, Any]:
+        """Converte um item da API do PNCP para o formato do banco de dados."""
+        return {
+            'licitacao_id': licitacao_db_id,
+            'numero_item': api_item.get('numeroItem'),
+            'descricao': api_item.get('descricao'),
+            'quantidade': api_item.get('quantidade'),
+            'unidade_medida': api_item.get('unidadeMedida'),
+            'valor_unitario_estimado': api_item.get('valorUnitarioEstimado'),
+            'situacao_item_id': api_item.get('situacaoCompraItemId'),
+            'criterio_julgamento_id': api_item.get('criterioJulgamentoId')
+        }
+
+    def _fetch_items_from_pncp_api(self, pncp_id: str) -> List[Dict[str, Any]]:
+        """Busca itens diretamente na API do PNCP."""
+        
+        # O PNCP ID do frontend vem com / no final, ex: .../2025/
+        parsed_id = self.pncp_repo._parse_pncp_id(pncp_id)
+        if not parsed_id:
+            return []
+
+        pncp_api_url = f"https://pncp.gov.br/api/pncp/v1/orgaos/{parsed_id['cnpj']}/compras/{parsed_id['ano']}/{parsed_id['sequencial']}/itens"
+        
+        try:
+            logger.info(f"Consultando API de itens: {pncp_api_url}")
+            response = requests.get(pncp_api_url, timeout=20)
+            response.raise_for_status()
+            
+            # A API pode retornar uma string vazia com status 200 se não houver itens
+            if not response.text:
+                logger.info(f"Nenhum item retornado pela API do PNCP para {pncp_id}")
+                return []
+
+            items_api = response.json()
+            if not items_api:
+                return []
+            
+            logger.info(f"✅ {len(items_api)} itens encontrados na API do PNCP para {pncp_id}")
+            return items_api
+        except requests.exceptions.HTTPError as http_err:
+            if http_err.response.status_code == 404:
+                logger.warning(f"Itens não encontrados na API do PNCP (404) para {pncp_id}")
+            else:
+                logger.error(f"Erro HTTP ao buscar itens na API do PNCP: {http_err}")
+        except Exception as e:
+            logger.error(f"Erro inesperado ao buscar itens na API do PNCP: {e}", exc_info=True)
+            
+        return []
 
     def _format_items_for_frontend(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -872,20 +1095,20 @@ class BidService:
         for item in items:
             formatted_item = {
                 'id': item.get('id'),
-                'numero_item': item.get('numero_item'),
-                'nome_item': item.get('nome_item'),
-                'descricao_complementar': item.get('descricao_complementar'),
+                'numero_item': item.get('numeroItem') or item.get('numero_item'),
+                'descricao': item.get('descricao') or item.get('nome_item'),
+                'descricao_complementar': item.get('descricaoComplementar') or item.get('descricao_complementar'),
                 'quantidade': item.get('quantidade'),
-                'valor_unitario': item.get('valor_unitario'),
-                'valor_total': item.get('valor_total_estimado', item.get('valor_unitario', 0) * item.get('quantidade', 0)),
-                'ncm_nbs': item.get('ncm_nbs'),
-                'unidade_medida': item.get('unidade_medida'),
-                'material_ou_servico': item.get('material_ou_servico'),
-                'beneficio_micro_epp': item.get('beneficio_micro_epp', False),
-                'participacao_exclusiva_me_epp': item.get('participacao_exclusiva_me_epp', False),
+                'valor_unitario': item.get('valorUnitarioEstimado') or item.get('valor_unitario'),
+                'valor_total': item.get('valorTotal') or item.get('valor_total_estimado', item.get('valor_unitario', 0) * item.get('quantidade', 0)),
+                'ncm_nbs': item.get('ncmNbsCodigo') or item.get('ncm_nbs'),
+                'unidade_medida': item.get('unidadeMedida') or item.get('unidade_medida'),
+                'material_ou_servico': item.get('materialOuServico') or item.get('material_ou_servico'),
+                'beneficio_micro_epp': item.get('tipoBeneficio') or item.get('beneficio_micro_epp', False),
+                'participacao_exclusiva_me_epp': item.get('tipoBeneficio') == 1,
                 'pncp_id': item.get('licitacao_pncp_id'),
-                'criterio_julgamento': item.get('criterio_julgamento'),
-                'criterio_valor_nome': item.get('criterio_valor_nome')
+                'criterio_julgamento': item.get('criterioJulgamentoNome') or item.get('criterio_julgamento'),
+                'criterio_valor_nome': item.get('criterioJulgamentoNome') or item.get('criterio_valor_nome')
             }
             formatted_items.append(formatted_item)
         return formatted_items
@@ -1102,4 +1325,27 @@ class BidService:
                 'licitacao_id': licitacao_id,
                 'cleanup_status': 'error',
                 'error': str(e)
-            }, f"Erro na limpeza: {str(e)}" 
+            }, f"Erro na limpeza: {str(e)}"
+
+    # ===== Helpers de parsing de PNCP ID =====
+
+    def _extract_year_from_pncp_id(self, pncp_id: str) -> Optional[int]:
+        """Extrai o ano (parte após a barra) do PNCP ID. Ex: 08584229000122-1-000013/2025 → 2025"""
+        if not pncp_id:
+            return None
+        try:
+            return int(pncp_id.strip('/').split('/')[-1])
+        except Exception:
+            return None
+
+    def _extract_sequential_from_pncp_id(self, pncp_id: str) -> Optional[int]:
+        """Extrai o número sequencial da compra do PNCP ID. Ex: ...-000013/2025 → 13"""
+        if not pncp_id:
+            return None
+        try:
+            main_part = pncp_id.strip('/').split('-')[-1]
+            seq_part = main_part.split('/')[0]
+            seq_clean = seq_part.lstrip('0') or seq_part  # remove zeros à esquerda
+            return int(seq_clean)
+        except Exception:
+            return None 

@@ -140,6 +140,93 @@ class BidRepository(BaseRepository):
                 
                 return items_list
     
+    def create_or_update(self, data: Dict[str, Any], conflict_key: str) -> Dict[str, Any]:
+        """
+        Cria ou atualiza um registro com base em uma chave de conflito (UPSERT).
+        
+        Args:
+            data: Dicionário com os dados a serem inseridos/atualizados.
+            conflict_key: A coluna que define o conflito (ex: 'numero_controle_pncp').
+
+        Returns:
+            O registro inserido ou atualizado.
+        """
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor(cursor_factory=DictCursor) as cursor:
+                cols = list(data.keys())
+                # Assegurar que as colunas não usem aspas simples
+                cols_str = ", ".join([f'"{c}"' for c in cols])
+                
+                placeholders = ", ".join(["%s"] * len(cols))
+                
+                # Cláusula de atualização
+                update_cols = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in cols if col != conflict_key])
+                
+                query = f"""
+                    INSERT INTO {self.table_name} ({cols_str})
+                    VALUES ({placeholders})
+                    ON CONFLICT ({conflict_key}) DO UPDATE SET
+                        {update_cols}
+                    RETURNING *;
+                """
+                
+                values = tuple(data.values())
+                cursor.execute(query, values)
+                
+                updated_row = cursor.fetchone()
+                conn.commit()
+                
+                return dict(updated_row)
+    
+    def create_or_update_bulk_items(self, items: List[Dict[str, Any]], conflict_keys: List[str]) -> int:
+        """
+        Insere ou atualiza uma lista de itens em lote.
+        Se um item com a mesma `licitacao_id` e `numero_item` já existir, ele é atualizado.
+        
+        Args:
+            items: Lista de dicionários, cada um representando um item.
+            conflict_keys: Lista de chaves que definem um conflito (ex: ['licitacao_id', 'numero_item']).
+
+        Returns:
+            O número de linhas afetadas.
+        """
+        if not items:
+            return 0
+            
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Obter colunas do primeiro item para construir a query dinamicamente
+                cols = items[0].keys()
+                # Garantir que as colunas do PostgreSQL não fiquem com aspas simples
+                cols_str = ", ".join([f'"{c}"' for c in cols])
+                
+                # placeholders para os valores
+                placeholders = ", ".join(["%s"] * len(cols))
+                
+                # Construir a cláusula de conflito
+                conflict_cols_str = ", ".join([f'"{c}"' for c in conflict_keys])
+                
+                # Construir a cláusula de atualização
+                update_cols = [f'"{col}" = EXCLUDED."{col}"' for col in cols if col not in conflict_keys]
+                update_str = ", ".join(update_cols)
+                
+                # Montar a query final
+                query = f"""
+                    INSERT INTO licitacao_itens ({cols_str})
+                    VALUES ({placeholders})
+                    ON CONFLICT ({conflict_cols_str}) DO UPDATE SET
+                    {update_str};
+                """
+                
+                # Preparar os dados para execução em lote
+                data_tuples = [tuple(item[col] for col in cols) for item in items]
+                
+                # Executar a operação em lote
+                from psycopg2.extras import execute_batch
+                execute_batch(cursor, query, data_tuples)
+                
+                return cursor.rowcount
+    
     def get_bid_items(self, pncp_id: str) -> List[Dict[str, Any]]:
         """
         Alias para find_items_by_pncp_id para compatibilidade com PNCPController
@@ -452,52 +539,98 @@ class BidRepository(BaseRepository):
         Baseado na função save_bid_to_db() que funciona corretamente
         """
         try:
+            if not licitacao_data:
+                logger.error("❌ Dados da licitação vazios")
+                return None
+
             # ===== MAPEAMENTO BASEADO NO pncp_api.py =====
             
             # Extrair dados da API (estrutura do search service)
             api_data = licitacao_data.get('api_data', {})
             
             # Validar e limitar valor total estimado
-            valor_total = licitacao_data.get("valor_total_estimado")
-            if valor_total is not None:
-                try:
-                    valor_total = float(valor_total)
+            valor_total = None
+            try:
+                valor_total_str = licitacao_data.get("valor_total_estimado")
+                if valor_total_str is not None:
+                    valor_total = float(valor_total_str)
                     # Limitar a 999 bilhões (limite do DECIMAL(15,2))
                     if valor_total > 999999999999.99:
                         valor_total = 999999999999.99
                     elif valor_total < 0:
                         valor_total = 0
-                except (ValueError, TypeError):
-                    valor_total = None
+            except (ValueError, TypeError):
+                valor_total = None
 
             # Validar e limitar valor total homologado
-            valor_homologado = licitacao_data.get("valor_total_homologado")
-            if valor_homologado is not None:
-                try:
-                    valor_homologado = float(valor_homologado)
+            valor_homologado = None
+            try:
+                valor_homologado_str = licitacao_data.get("valor_total_homologado")
+                if valor_homologado_str is not None:
+                    valor_homologado = float(valor_homologado_str)
                     if valor_homologado > 999999999999.99:
                         valor_homologado = 999999999999.99
                     elif valor_homologado < 0:
                         valor_homologado = 0
-                except (ValueError, TypeError):
-                    valor_homologado = None
+            except (ValueError, TypeError):
+                valor_homologado = None
             
             # Extrair campos usando EXATAMENTE a mesma lógica do pncp_api.py
-            pncp_id = licitacao_data.get('pncp_id', '')
+            pncp_id = licitacao_data.get('pncp_id')
+            if not pncp_id:
+                logger.error("❌ PNCP ID não fornecido")
+                return None
+
+            # Campos obrigatórios com valores default
             orgao_cnpj = licitacao_data.get('orgao_cnpj', '')
-            razao_social = licitacao_data.get('orgao_razao_social', '')
+            razao_social = licitacao_data.get('razao_social', '')
             
             # Ano e sequencial - usar dados da API ou extrair do pncp_id
-            ano_compra = licitacao_data.get('ano_compra') or self._extract_year_from_pncp_id(pncp_id)
-            sequencial_compra = licitacao_data.get('sequencial_compra') or self._extract_sequential_from_pncp_id(pncp_id)
+            try:
+                ano_compra = int(licitacao_data.get('ano_compra') or self._extract_year_from_pncp_id(pncp_id))
+                sequencial_compra = int(licitacao_data.get('sequencial_compra') or self._extract_sequential_from_pncp_id(pncp_id))
+            except (ValueError, TypeError):
+                ano_compra = self._extract_year_from_pncp_id(pncp_id)
+                sequencial_compra = self._extract_sequential_from_pncp_id(pncp_id)
             
-            # Dados de UF e unidade
-            uf_sigla = licitacao_data.get('uf', '')
+            # Dados de UF e unidade com valores default
+            uf_sigla = str(licitacao_data.get('uf', ''))[:2]  # character(2)
             uf_nome = licitacao_data.get('uf_nome', '')
-            nome_unidade = licitacao_data.get('unidade_nome', '')
-            municipio_nome = licitacao_data.get('municipio', '')
-            codigo_ibge = licitacao_data.get('codigo_ibge')
-            codigo_unidade = licitacao_data.get('unidade_compra', '')
+            nome_unidade = licitacao_data.get('nome_unidade', '')
+            municipio_nome = licitacao_data.get('municipio_nome', '')
+            codigo_ibge = licitacao_data.get('codigo_ibge', '')
+            codigo_unidade = licitacao_data.get('codigo_unidade', '')
+
+            # Converter datas para timestamp
+            data_publicacao = None
+            data_abertura = None
+            data_encerramento = None
+            
+            try:
+                if licitacao_data.get('data_publicacao'):
+                    data_publicacao = datetime.strptime(licitacao_data['data_publicacao'], '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                pass
+
+            try:
+                if licitacao_data.get('data_abertura_proposta'):
+                    data_abertura = datetime.strptime(licitacao_data['data_abertura_proposta'], '%Y-%m-%d %H:%M:%S')
+            except (ValueError, TypeError):
+                pass
+
+            try:
+                if licitacao_data.get('data_encerramento_proposta'):
+                    data_encerramento = datetime.strptime(licitacao_data['data_encerramento_proposta'], '%Y-%m-%d %H:%M:%S')
+            except (ValueError, TypeError):
+                pass
+
+            # Converter modo_disputa_id para integer
+            modo_disputa_id = None
+            try:
+                if licitacao_data.get('modo_disputa_id'):
+                    modo_disputa_id = int(licitacao_data['modo_disputa_id'])
+            except (ValueError, TypeError):
+                pass
             
             # ===== USAR EXATAMENTE OS MESMOS CAMPOS DO pncp_api.py =====
             with self.db_manager.get_connection() as conn:
@@ -540,7 +673,7 @@ class BidRepository(BaseRepository):
                         sequencial_compra,
                         licitacao_data.get('objeto_compra', ''),
                         licitacao_data.get('link_sistema_origem', ''),
-                        licitacao_data.get('data_publicacao_pncp'),
+                        data_publicacao,
                         valor_total,
                         uf_sigla,
                         "coletada",
@@ -549,10 +682,10 @@ class BidRepository(BaseRepository):
                         licitacao_data.get('numero_compra', ''),
                         licitacao_data.get('processo', ''),
                         valor_homologado,
-                        licitacao_data.get('data_inicio_lances'),  # data_abertura_proposta
-                        licitacao_data.get('data_encerramento_proposta'),  # data_encerramento_proposta
-                        licitacao_data.get('modo_disputa_id'),
-                        licitacao_data.get('modo_disputa', ''),
+                        data_abertura,  # data_abertura_proposta
+                        data_encerramento,  # data_encerramento_proposta
+                        modo_disputa_id,
+                        licitacao_data.get('modo_disputa_nome'),
                         licitacao_data.get('srp', False),
                         licitacao_data.get('link_processo_eletronico', ''),
                         licitacao_data.get('justificativa_presencial', ''),
@@ -565,6 +698,8 @@ class BidRepository(BaseRepository):
                     ))
                     
                     result = cursor.fetchone()
+                    conn.commit()  # Adicionado commit explícito
+                    
                     if result:
                         licitacao_id = str(result[0])
                         logger.info(f"✅ Licitação salva: {pncp_id} -> ID {licitacao_id}")

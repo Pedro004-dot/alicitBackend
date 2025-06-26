@@ -10,6 +10,8 @@ from middleware.error_handler import log_endpoint_access
 from exceptions.api_exceptions import ValidationError, NotFoundError, DatabaseError
 from supabase import create_client, Client
 import os
+import re
+from ._id_converter import convert_pncp_to_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -88,58 +90,19 @@ class BidController:
         """GET /api/bids/detail?pncp_id=<id> - Obter detalhes de licitação específica por query parameter"""
         try:
             pncp_id = request.args.get('pncp_id')
-            
             if not pncp_id:
-                return jsonify({
-                    'success': False,
-                    'message': 'Parâmetro pncp_id é obrigatório'
-                }), 400
-            
-            logger.info(f"🔍 Buscando detalhes da licitação PNCP: {pncp_id}")
-            
-            # Usar o service para obter licitação formatada
-            bid = self.bid_service.get_bid_by_pncp_id(pncp_id)
-            
-            if not bid:
-                return jsonify({
-                    'success': False,
-                    'message': 'Licitação não encontrada'
-                }), 404
-            
-            # 🔍 DEBUG: Log dos campos de órgão para verificar se estão sendo enviados
-            logger.info(f"🏢 Campos de órgão para {pncp_id}:")
-            logger.info(f"  razao_social: {bid.get('razao_social')}")
-            logger.info(f"  nome_unidade: {bid.get('nome_unidade')}")
-            logger.info(f"  municipio_nome: {bid.get('municipio_nome')}")
-            logger.info(f"  uf_nome: {bid.get('uf_nome')}")
-            logger.info(f"  orgao_cnpj: {bid.get('orgao_cnpj')}")
+                return jsonify({'success': False, 'message': 'pncp_id não fornecido'}), 400
 
-            # Buscar itens da licitação formatados
-            bid_items, items_message = self.bid_service.get_bid_items(pncp_id)
-            
-            # Adicionar itens ao bid
-            bid['itens'] = bid_items
-            bid['possui_itens'] = len(bid_items) > 0
-            
-            # 🔍 DEBUG: Log das datas para verificar se estão sendo enviadas
-            logger.info(f"📅 Datas sendo enviadas para {pncp_id}:")
-            logger.info(f"  data_abertura_proposta: {bid.get('data_abertura_proposta')}")
-            logger.info(f"  data_encerramento_proposta: {bid.get('data_encerramento_proposta')}")
-            logger.info(f"  data_publicacao: {bid.get('data_publicacao')}")
-            
-            return jsonify({
-                'success': True,
-                'data': bid,
-                'message': f'Licitação {pncp_id} encontrada com {len(bid_items)} itens'
-            }), 200
-            
+            result = self.bid_service.get_bid_by_pncp_id(pncp_id)
+
+            if result:
+                return jsonify({'success': True, 'data': result}), 200
+            else:
+                return jsonify({'success': False, 'message': 'Licitação não encontrada'}), 404
+
         except Exception as e:
-            logger.error(f"❌ Erro ao buscar detalhes da licitação: {e}")
-            return jsonify({
-                'success': False,
-                'error': str(e),
-                'message': 'Erro ao buscar detalhes da licitação'
-            }), 500
+            logger.error(f"❌ Erro ao buscar detalhes da licitação: {e}", exc_info=True)
+            return jsonify({'success': False, 'message': str(e)}), 500
     
     @log_endpoint_access
     def get_bid_items(self, pncp_id: str) -> Tuple[Dict[str, Any], int]:
@@ -175,39 +138,30 @@ class BidController:
     def get_bid_items_by_query(self) -> Tuple[Dict[str, Any], int]:
         """GET /api/bids/items?pncp_id=<id> - Buscar itens de licitação específica por query parameter"""
         try:
-            from flask import request
+            licitacao_data = None
+            # Para POST, os dados da licitação vêm no corpo
+            if request.method == 'POST':
+                licitacao_data = request.get_json()
+                if not licitacao_data:
+                    return jsonify({'success': False, 'message': 'Corpo da requisição POST está vazio.'}), 400
             
+            # O pncp_id é sempre esperado na query string para identificar o recurso
             pncp_id = request.args.get('pncp_id')
-            
             if not pncp_id:
-                return jsonify({
-                    'success': False,
-                    'message': 'Parâmetro pncp_id é obrigatório'
-                }), 400
+                return jsonify({'success': False, 'message': 'Parâmetro pncp_id é obrigatório'}), 400
             
-            logger.info(f"🔍 Buscando itens da licitação PNCP: {pncp_id}")
+            logger.info(f"🔍 Buscando itens da licitação PNCP: {pncp_id} (Método: {request.method})")
             
-            # Primeiro, buscar a licitação pelo pncp_id
-            bid = self.bid_service.licitacao_repo.find_by_pncp_id(pncp_id)
+            # Chamar o serviço, passando os dados da licitação se for um POST
+            result = self.bid_service.get_bid_items(pncp_id, licitacao_data=licitacao_data)
             
-            if not bid:
-                return jsonify({
-                    'success': False,
-                    'message': 'Licitação não encontrada'
-                }), 404
+            if not result.get('success'):
+                return jsonify(result), 404
             
-            # Buscar itens da licitação usando o ID interno
-            bid_items = self.bid_service.licitacao_repo.find_items_by_licitacao_id(bid['id'])
-            
-            return jsonify({
-                'success': True,
-                'data': bid_items,
-                'total': len(bid_items),
-                'message': f'{len(bid_items)} itens encontrados para a licitação {pncp_id}'
-            }), 200
+            return jsonify(result), 200
             
         except Exception as e:
-            logger.error(f"❌ Erro ao buscar itens da licitação: {e}")
+            logger.error(f"❌ Erro ao buscar itens da licitação: {e}", exc_info=True)
             return jsonify({
                 'success': False,
                 'error': str(e),
@@ -644,23 +598,28 @@ class BidController:
         """
         try:
             data = request.get_json()
-            
             if not data:
-                return jsonify({
-                    'success': False,
-                    'error': 'JSON payload obrigatório'
-                }), 400
+                return jsonify({'success': False, 'error': 'JSON payload obrigatório'}), 400
             
             licitacao_id = data.get('licitacao_id')
-            pncp_id = data.get('pncp_id')
+            pncp_id = data.get('pncp_id') # pncp_id é opcional, mas útil para o service
             
-            if not licitacao_id or not pncp_id:
-                return jsonify({
-                    'success': False,
-                    'error': 'Parâmetros licitacao_id e pncp_id são obrigatórios'
-                }), 400
+            if not licitacao_id:
+                return jsonify({'success': False, 'error': 'Parâmetro licitacao_id é obrigatório'}), 400
+
+            # >>> INÍCIO DA CORREÇÃO: LÓGICA DE CONVERSÃO DE ID <<<
+            try:
+                uuid_licitacao_id = convert_pncp_to_uuid(licitacao_id)
+                if not uuid_licitacao_id:
+                    return jsonify({'success': False, 'error': f'Licitação não encontrada para o ID fornecido: {licitacao_id}'}), 404
+                
+                # Usar o UUID convertido daqui em diante
+                licitacao_id = uuid_licitacao_id
+            except Exception as e:
+                 return jsonify({'success': False, 'error': f'Erro ao processar ID: {str(e)}'}), 500
+            # >>> FIM DA CORREÇÃO <<<
             
-            logger.info(f"🚀 Controller: Iniciando preparação para {licitacao_id}")
+            logger.info(f"🚀 Controller: Iniciando preparação para licitacao_id (UUID): {licitacao_id}")
             
             result, message = self.bid_service.start_document_preparation(licitacao_id, pncp_id)
             
@@ -698,7 +657,19 @@ class BidController:
                     'error': 'Parâmetro licitacao_id é obrigatório'
                 }), 400
             
-            logger.info(f"📊 Controller: Verificando status para {licitacao_id}")
+            # >>> INÍCIO DA CORREÇÃO: LÓGICA DE CONVERSÃO DE ID <<<
+            try:
+                uuid_licitacao_id = convert_pncp_to_uuid(licitacao_id)
+                if not uuid_licitacao_id:
+                    return jsonify({'success': False, 'error': f'Licitação não encontrada para o ID fornecido: {licitacao_id}'}), 404
+                
+                # Usar o UUID convertido daqui em diante
+                licitacao_id = uuid_licitacao_id
+            except Exception as e:
+                 return jsonify({'success': False, 'error': f'Erro ao processar ID: {str(e)}'}), 500
+            # >>> FIM DA CORREÇÃO <<<
+            
+            logger.info(f"📊 Controller: Verificando status para licitacao_id (UUID): {licitacao_id}")
             
             result, message = self.bid_service.get_preparation_status(licitacao_id)
             
@@ -762,101 +733,86 @@ class BidController:
     
     @log_endpoint_access
     def get_bid_documents(self) -> Tuple[Dict[str, Any], int]:
-        """GET /api/bids/documents?licitacao_id=<id> - Listar documentos de uma licitação no Supabase Storage"""
+        """
+        GET /api/bids/documents?licitacao_id=<id>
+        Lista os documentos de uma licitação, buscando-os no Supabase Storage.
+        """
         try:
-            from flask import request
-            from supabase import create_client, Client
-            import os
-            
-            licitacao_id = request.args.get('licitacao_id')
-            
-            if not licitacao_id:
-                return jsonify({
-                    'success': False,
-                    'message': 'Parâmetro licitacao_id é obrigatório'
-                }), 400
-            
-            logger.info(f"🔍 Buscando documentos da licitação: {licitacao_id}")
-            
-            # Configuração do Supabase
-            supabase_url = os.getenv('SUPABASE_URL')
-            # 🔧 CORREÇÃO: Usar ANON_KEY que funciona com Storage
-            supabase_key = os.getenv('SUPABASE_ANON_KEY') or os.getenv('SUPABASE_SERVICE_KEY')
-            
-            if not supabase_url or not supabase_key:
-                logger.error("❌ Credenciais do Supabase não encontradas")
-                return self._return_mock_documents(licitacao_id, "Credenciais não configuradas")
-            
+            licitacao_id_param = request.args.get('licitacao_id')
+            if not licitacao_id_param:
+                return jsonify({'success': False, 'error': 'Parâmetro licitacao_id é obrigatório'}), 400
+
+            logger.info(f"🔍 Buscando documentos da licitação: {licitacao_id_param}")
+
+            # >>> INÍCIO DA CORREÇÃO: Converter pncp_id para UUID <<<
             try:
-                # Criar cliente Supabase
-                supabase: Client = create_client(supabase_url, supabase_key)
-                bucket_name = 'licitacao-documents'
-                
-                logger.info(f"✅ Cliente Supabase criado, acessando bucket: {bucket_name}")
-                
-                # Listar arquivos na pasta da licitação
-                folder_path = f"licitacoes/{licitacao_id}"
-                
-                try:
-                    files = supabase.storage.from_(bucket_name).list(folder_path)
-                    
-                    if not files:
-                        logger.info(f"📁 Nenhum arquivo encontrado em {folder_path}")
-                        return jsonify({
-                            'success': True,
-                            'data': [],
-                            'message': f'Nenhum documento encontrado para a licitação {licitacao_id}',
-                            'total': 0
-                        }), 200
-                    
-                    # Processar arquivos encontrados
-                    documents = []
-                    for file_info in files:
-                        if file_info.get('name') and not file_info.get('name').endswith('/'):  # Ignorar pastas
-                            # Gerar URL pública
-                            file_path = f"{folder_path}/{file_info['name']}"
-                            public_url = supabase.storage.from_(bucket_name).get_public_url(file_path)
-                            
-                            # Determinar tipo do arquivo
-                            file_extension = file_info['name'].split('.')[-1].lower() if '.' in file_info['name'] else 'unknown'
-                            file_type = 'pdf' if file_extension == 'pdf' else file_extension
-                            
-                            documents.append({
-                                'name': file_info['name'],
-                                'url': public_url,
-                                'type': file_type,
-                                'size': file_info.get('metadata', {}).get('size'),
-                                'created_at': file_info.get('created_at'),
-                                'updated_at': file_info.get('updated_at')
-                            })
-                    
-                    logger.info(f"✅ {len(documents)} documentos encontrados para licitação {licitacao_id}")
-                    
-                    return jsonify({
-                        'success': True,
-                        'data': documents,
-                        'message': f'{len(documents)} documentos encontrados',
-                        'total': len(documents)
-                    }), 200
-                
-                except Exception as list_error:
-                    logger.error(f"❌ Erro ao listar arquivos: {list_error}")
-                    return self._return_mock_documents(licitacao_id, f"Erro ao listar arquivos: {list_error}")
+                uuid_licitacao_id = convert_pncp_to_uuid(licitacao_id_param)
+            except ValueError as e:
+                logger.error(f"❌ Erro ao converter ID '{licitacao_id_param}' para UUID: {e}")
+                return jsonify({'success': False, 'error': str(e)}), 404
+            # >>> FIM DA CORREÇÃO <<<
+
+            # Inicializar cliente Supabase (a lógica pode variar, ajustar conforme necessário)
+            if not os.environ.get('SUPABASE_URL') or not os.environ.get('SUPABASE_SERVICE_KEY'):
+                logger.error("❌ Variáveis de ambiente SUPABASE não configuradas.")
+                return self._return_mock_documents(uuid_licitacao_id, "Supabase não configurado")
+
+            # >>> INÍCIO DO LOG DE DEPURAÇÃO <<<
+            service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+            key_fingerprint = f"{service_key[:5]}...{service_key[-5:]}" if len(service_key) > 10 else "Chave muito curta para fingerprint"
+            logger.info(f"🔑 DEBUG: Usando SUPABASE_SERVICE_KEY com o seguinte fingerprint: {key_fingerprint}")
+            # >>> FIM DO LOG DE DEPURAÇÃO <<<
+
+            supabase: Client = create_client(
+                os.environ.get("SUPABASE_URL"), 
+                service_key # Usando a variável que acabamos de obter
+            )
+            bucket_name = "licitacao-documents"
+            logger.info(f"✅ Cliente Supabase criado, acessando bucket: {bucket_name}")
+
+            # Montar o caminho usando o UUID convertido
+            path = f"licitacoes/{uuid_licitacao_id}"
             
-            except Exception as supabase_error:
-                logger.error(f"❌ Erro ao acessar Supabase Storage: {supabase_error}")
-                # Tentar buscar arquivos locais como fallback
-                local_docs = self._get_local_documents(licitacao_id)
-                if local_docs:
-                    return local_docs
-                return self._return_mock_documents(licitacao_id, f"Erro de conectividade: {supabase_error}")
-        
-        except Exception as e:
-            logger.error(f"❌ Erro geral no endpoint de documentos: {e}")
+            # Listar arquivos no caminho especificado
+            response = supabase.storage.from_(bucket_name).list(path)
+
+            if not response:
+                 logger.info(f"📁 Nenhum arquivo encontrado em {path}")
+                 return jsonify({'success': True, 'data': [], 'total': 0, 'message': 'Nenhum documento encontrado'}), 200
+
+            documentos = []
+            for doc in response:
+                public_url_response = supabase.storage.from_(bucket_name).get_public_url(f"{path}/{doc['name']}")
+                
+                # Tratamento de erro se a URL pública não for obtida
+                if not public_url_response:
+                    public_url = None
+                    logger.warning(f"⚠️ Não foi possível obter a URL pública para {doc['name']}")
+                else:
+                    public_url = public_url_response
+
+                documentos.append({
+                    'name': doc.get('name'),
+                    'id': doc.get('id'),
+                    'updated_at': doc.get('updated_at'),
+                    'created_at': doc.get('created_at'),
+                    'last_accessed_at': doc.get('last_accessed_at'),
+                    'metadata': doc.get('metadata'),
+                    'public_url': public_url
+                })
+            
+            logger.info(f"✅ {len(documentos)} documentos encontrados para {uuid_licitacao_id}")
+
             return jsonify({
-                'success': False,
-                'message': f'Erro interno: {str(e)}'
-            }), 500
+                'success': True,
+                'data': documentos,
+                'total': len(documentos),
+                'message': f'{len(documentos)} documentos encontrados'
+            }), 200
+
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar documentos: {e}", exc_info=True)
+            return jsonify({'success': False, 'error': f'Erro interno: {str(e)}'}), 500
     
     def _get_local_documents(self, licitacao_id: str) -> Tuple[Dict[str, Any], int] | None:
         """Busca documentos no sistema de arquivos local como fallback"""

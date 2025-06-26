@@ -53,11 +53,14 @@ def process_daily_bids(vectorizer: BaseTextVectorizer, enable_llm_validation: bo
         llm_validator = LLMConfig.create_validator()
         print(f"🤖 Validador LLM configurado (threshold: {llm_validator.HIGH_SCORE_THRESHOLD:.1%})")
     
-    # Data de hoje
+    # 🔥 NOVA CONFIGURAÇÃO: Buscar licitações da última semana
     today = datetime.date.today()
-    date_str = today.strftime("%Y%m%d")
+    one_week_ago = today - datetime.timedelta(days=7)
     
-    print(f"📅 Buscando licitações do dia: {today.strftime('%d/%m/%Y')}")
+    start_date_str = one_week_ago.strftime("%Y%m%d")
+    end_date_str = today.strftime("%Y%m%d")
+    
+    print(f"📅 Buscando licitações da última semana: {one_week_ago.strftime('%d/%m/%Y')} até {today.strftime('%d/%m/%Y')}")
     
     # 1. Carregar empresas 
     print("\n🏢 Carregando empresas do banco...")
@@ -82,7 +85,7 @@ def process_daily_bids(vectorizer: BaseTextVectorizer, enable_llm_validation: bo
         uf_bids = 0
         
         while page <= PNCP_MAX_PAGES:
-            bids, has_more_pages = fetch_bids_from_pncp(date_str, date_str, uf, page)
+            bids, has_more_pages = fetch_bids_from_pncp(start_date_str, end_date_str, uf, page)
             
             if not bids:
                 break
@@ -250,6 +253,11 @@ def process_daily_bids(vectorizer: BaseTextVectorizer, enable_llm_validation: bo
                 if should_accept_match:
                     potential_matches.append((company, final_score, final_justificativa))
                     print(f"         ✅ MATCH APROVADO PARA SALVAMENTO!")
+                    
+                    # 🔥 FIX CRÍTICO: Salvar match aprovado pelo LLM imediatamente
+                    save_match_to_db(pncp_id, company["id"], final_score, "llm_approved", final_justificativa)
+                    estatisticas['matches_saved_immediately'] += 1
+                    print(f"         💾 Match salvo no banco imediatamente!")
                 else:
                     print(f"         ❌ Match rejeitado - NÃO será salvo no banco")
         
@@ -566,6 +574,10 @@ def reevaluate_existing_bids(vectorizer: BaseTextVectorizer, clear_matches: bool
                 if should_accept_match:
                     potential_matches.append((company, final_score, final_justificativa))
                     print(f"         ✅ MATCH APROVADO PARA SALVAMENTO!")
+                    
+                    # 🔥 FIX CRÍTICO: Salvar match aprovado pelo LLM imediatamente na reavaliação também
+                    save_match_to_db(pncp_id, company["id"], final_score, "llm_approved", final_justificativa)
+                    print(f"         💾 Match salvo no banco imediatamente!")
                 else:
                     print(f"         ❌ Match rejeitado - NÃO será salvo no banco")
         
