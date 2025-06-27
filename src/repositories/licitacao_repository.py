@@ -386,15 +386,16 @@ class LicitacaoPNCPRepository:
         palavras_busca: List[str]
     ) -> List[Dict[str, Any]]:
         """
-        FILTRO LOCAL REAL COMO O THIAGO FAZ:
-        - Busca substring SIMPLES no objetoCompra
+        FILTRO LOCAL REAL COMO O THIAGO FAZ (VERSÃO MELHORADA):
+        - Busca substring SIMPLES no objetoCompra E campos adicionais
         - Sem threshold complexo
         - Sem stemmer agressivo
+        - Busca de UF mais flexível
         - Foco na simplicidade e eficácia
         """
         from datetime import datetime
         
-        logger.info("🔍 FILTRO LOCAL ESTILO THIAGO REAL")
+        logger.info("🔍 FILTRO LOCAL ESTILO THIAGO REAL (MELHORADO)")
         
         if not palavras_busca:
             logger.warning("⚠️ Nenhuma palavra de busca fornecida")
@@ -432,6 +433,11 @@ class LicitacaoPNCPRepository:
         rejeitadas_estado = 0
         rejeitadas_valor = 0
         
+        # ✅ MELHORIA 3: Variáveis para logs melhorados
+        exemplos_objetos_rejeitados = []
+        max_exemplos = 5
+        termos_utilizados = {}
+        
         for lic in licitacoes:
             total_analisadas += 1
             
@@ -443,12 +449,28 @@ class LicitacaoPNCPRepository:
             
             # FILTROS EM CAMADAS (do mais barato para o mais caro)
             
-            # Camada 1: Filtro de estado (se especificado)
+            # ✅ MELHORIA 1: Filtro de estado MAIS FLEXÍVEL
             if estados_filtro:
                 estado_licitacao = None
-                unidade_orgao_uf = lic.get('unidadeOrgao', {})
-                if unidade_orgao_uf:
-                    estado_licitacao = unidade_orgao_uf.get('ufSigla', '').strip().upper()
+                
+                # Tentar pegar UF de múltiplos lugares (em ordem de prioridade)
+                unidade_orgao = lic.get('unidadeOrgao', {})
+                if unidade_orgao:
+                    estado_licitacao = unidade_orgao.get('ufSigla', '').strip().upper()
+                
+                # Se não encontrou, tentar em orgaoEntidade
+                if not estado_licitacao:
+                    orgao_entidade = lic.get('orgaoEntidade', {})
+                    if orgao_entidade:
+                        estado_licitacao = orgao_entidade.get('uf', '').strip().upper()
+                
+                # Se ainda não encontrou, tentar outras variações no nível raiz
+                if not estado_licitacao:
+                    estado_licitacao = lic.get('uf', '').strip().upper()
+                
+                # Se ainda não encontrou, tentar ufSigla no nível raiz
+                if not estado_licitacao:
+                    estado_licitacao = lic.get('ufSigla', '').strip().upper()
 
                 if not estado_licitacao or estado_licitacao not in estados_filtro:
                     rejeitadas_estado += 1
@@ -489,32 +511,56 @@ class LicitacaoPNCPRepository:
                     rejeitadas_valor += 1
                     continue
             
-            # Camada 5 (FINAL): Filtro textual (o mais caro)
-            objeto_compra = lic.get('objetoCompra', '')
-            if not objeto_compra:
+            # ✅ MELHORIA 2: Filtro textual MAIS ABRANGENTE - buscar em múltiplos campos
+            objeto_compra = lic.get('objetoCompra', '') or ''
+            objeto_detalhado = lic.get('objetoDetalhado', '') or ''
+            informacao_complementar = lic.get('informacaoComplementar', '') or ''
+            
+            # Combinar todos os textos
+            texto_completo = ' '.join([
+                objeto_compra,
+                objeto_detalhado,
+                informacao_complementar
+            ]).strip()
+            
+            if not texto_completo:
                 rejeitadas_palavra += 1
                 continue
             
-            objeto_normalizado = self._normalizar_simples(objeto_compra)
+            texto_normalizado = self._normalizar_simples(texto_completo)
             
             encontrou_termo = False
+            termo_encontrado = None
             for termo in termos_normalizados:
-                if termo in objeto_normalizado:
+                if termo in texto_normalizado:
                     encontrou_termo = True
+                    termo_encontrado = termo
                     break
             
             if not encontrou_termo:
                 rejeitadas_palavra += 1
-                logger.debug(f"❌ Rejeitada por palavra: {numero_controle} - '{objeto_compra[:50]}...'")
+                
+                # ✅ MELHORIA 3: LOG para debug (primeiros 5 exemplos)
+                if len(exemplos_objetos_rejeitados) < max_exemplos:
+                    exemplos_objetos_rejeitados.append({
+                        'id': numero_controle,
+                        'objeto': objeto_compra[:100] + '...' if len(objeto_compra) > 100 else objeto_compra,
+                        'normalizado': texto_normalizado[:100] + '...' if len(texto_normalizado) > 100 else texto_normalizado
+                    })
+                
                 continue
+            
+            # ✅ MELHORIA 3: Contabilizar termos que funcionaram
+            if termo_encontrado:
+                termos_utilizados[termo_encontrado] = termos_utilizados.get(termo_encontrado, 0) + 1
             
             # Licitação aprovada por todos os filtros
             vistas.add(numero_controle)
             licitacoes_aprovadas.append(lic)
         
-        # Log dos resultados
-        logger.info("📊 RESULTADO DO FILTRO LOCAL:")
-        logger.info(f"   📋 Analisadas: {total_analisadas}")
+        # ✅ MELHORIA 3: LOG DETALHADO DOS RESULTADOS
+        logger.info("📊 RESULTADO DO FILTRO LOCAL MELHORADO:")
+        logger.info(f"   📋 Total analisadas: {total_analisadas}")
         logger.info(f"   ✅ Aprovadas: {len(licitacoes_aprovadas)}")
         logger.info(f"   ❌ Rejeitadas:")
         logger.info(f"      🔄 Duplicatas: {rejeitadas_duplicata}")
@@ -523,6 +569,22 @@ class LicitacaoPNCPRepository:
         logger.info(f"      ⏰ Prazo: {rejeitadas_prazo}")
         logger.info(f"      💰 Valor: {rejeitadas_valor}")
         logger.info(f"      🔤 Palavra: {rejeitadas_palavra}")
+        
+        # ✅ MELHORIA 3: LOG de exemplos rejeitados por palavra (para debug)
+        if exemplos_objetos_rejeitados:
+            logger.info("🔍 EXEMPLOS de objetos REJEITADOS por palavra:")
+            for ex in exemplos_objetos_rejeitados:
+                logger.info(f"   ID: {ex['id']}")
+                logger.info(f"   Objeto: {ex['objeto']}")
+                logger.info(f"   Normalizado: {ex['normalizado']}")
+                logger.info("   ---")
+        
+        # ✅ MELHORIA 3: LOG dos termos que funcionaram
+        if termos_utilizados:
+            termos_ordenados = dict(sorted(termos_utilizados.items(), key=lambda x: x[1], reverse=True))
+            logger.info(f"🎯 Termos que FUNCIONARAM: {termos_ordenados}")
+        else:
+            logger.info("⚠️ Nenhum termo de busca funcionou")
         
         return licitacoes_aprovadas
 
