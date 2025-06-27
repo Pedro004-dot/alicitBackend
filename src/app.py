@@ -238,6 +238,7 @@ def _register_blueprints(app: Flask) -> None:
         from routes.auth_routes import auth_routes # ✅ AUTENTICAÇÃO
         from routes.licitacao_routes import licitacao_routes # ✅ NOVA BUSCA DE LICITAÇÕES
         from routes.quality_match_routes import quality_match_routes # 🎯 QUALITY MATCHING
+        from routes.debug_routes import debug_bp # 🐞 DEBUG E ANÁLISE DE DADOS
   
         # Registrar blueprints
         app.register_blueprint(auth_routes)  # ✅ Autenticação primeiro
@@ -246,6 +247,7 @@ def _register_blueprints(app: Flask) -> None:
         app.register_blueprint(match_routes)
         app.register_blueprint(quality_match_routes)  # 🎯 Quality Matching
         app.register_blueprint(licitacao_routes)  # ✅ NOVA BUSCA DE LICITAÇÕES
+        app.register_blueprint(debug_bp)  # 🐞 DEBUG E ANÁLISE DE DADOS
     
         app.register_blueprint(system_routes)
         
@@ -268,9 +270,10 @@ def _register_blueprints(app: Flask) -> None:
         app.logger.info("  ✅ Matches: 4 endpoints (/api/matches/*)")
         app.logger.info("  🎯 Quality Matches: 4 endpoints (/api/quality-matches/*)")
         app.logger.info("  ✅ Licitacoes: 1 endpoint (/api/licitacoes/buscar)")
+        app.logger.info("  🐞 Debug: 7 endpoints (/api/debug/*)")
         app.logger.info("  ✅ System: 7 endpoints (/api/status/*, /api/config/*, etc)")
         app.logger.info("  🆕 Chat: 8 endpoints (/api/licitacoes/*/chat, /api/admin/rag)")
-        app.logger.info("  📊 TOTAL: 76 endpoints ativos")
+        app.logger.info("  📊 TOTAL: 83 endpoints ativos")
         
         app.logger.info("✅ Todos os blueprints registrados com sucesso!")
         

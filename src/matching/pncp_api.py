@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Configurações da API PNCP ---
-PNCP_BASE_URL_PUBLICACAO = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
+PNCP_BASE_URL_PUBLICACAO = "https://pncp.gov.br/api/consulta/v1/contratacoes/proposta"
 PNCP_BASE_URL_ITENS = "https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{anoCompra}/{sequencialCompra}/itens"
 PNCP_PAGE_SIZE = 50  # Quantidade de licitações por página
 PNCP_MAX_PAGES = 10  # 🔥 AUMENTADO: Mais páginas para busca semanal

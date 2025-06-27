@@ -1,0 +1,16 @@
+{
+  "problema_1": {
+    "status": "NECESSITA_CORRECAO",
+    "causa": "API incorreta: /contratacoes/publicacao",
+    "solucao": "Migrar para /contratacoes/proposta",
+    "arquivo_alvo": "src/repositories/licitacao_repository.py",
+    "linha_aproximada": 718,
+    "alteracao_necessaria": "Trocar endpoint de 'publicacao' para 'proposta'"
+  },
+  "problema_2": {
+    "status": "FUNCIONANDO_CORRETAMENTE",
+    "causa": "N/A",
+    "solucao": "Nenhuma ação necessária",
+    "confirmacao": "informacaoComplementar está sendo usada no filtro local"
+  }
+}

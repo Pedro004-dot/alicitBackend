@@ -204,8 +204,8 @@ class LicitacaoPNCPRepository:
             return None
         
         # Endpoint de detalhes da compra (sem /itens)
-        endpoint = f"https://pncp.gov.br/api/pncp/v1/orgaos/{parsed_id['cnpj']}/compras/{parsed_id['ano']}/{parsed_id['sequencial']}"
-        
+        # endpoint = f"https://pncp.gov.br/api/pncp/v1/orgaos/{parsed_id['cnpj']}/compras/{parsed_id['ano']}/{parsed_id['sequencial']}"
+        endpoint = f"https://pncp.gov.br/api/consulta/v1/orgaos/{parsed_id['cnpj']}/compras/{parsed_id['ano']}/{parsed_id['sequencial']}"
         try:
             logger.info(f"Consultando API de detalhes: {endpoint}")
             async with session.get(endpoint, timeout=self.timeout) as response:
@@ -686,7 +686,7 @@ class LicitacaoPNCPRepository:
     ) -> Optional[Dict[str, Any]]:
         """Busca assíncrona básica. Retorna None em caso de falha."""
         try:
-            endpoint = f"{self.base_url}/contratacoes/publicacao"
+            endpoint = f"{self.base_url}/contratacoes/proposta"
             params = self._construir_parametros(filtros, palavras_busca, pagina, itens_por_pagina)
             
             async with session.get(endpoint, params=params, timeout=self.timeout) as response:
