@@ -4,11 +4,12 @@ Controller para lidar com as requisições HTTP relacionadas à busca de licita�
 """
 import logging
 from flask import request, jsonify
-from typing import Dict, Any, Tuple
+from typing import Dict, List, Optional
 
 # Importar o serviço principal
 from services.licitacao_service import LicitacaoService
 from middleware.error_handler import log_endpoint_access
+from services.search.source_registry import RegistroFontes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,231 +22,103 @@ class LicitacaoController:
 
     def __init__(self):
         """Inicializa o controller e uma instância do serviço de licitação."""
-        self.licitacao_service = LicitacaoService()
-
-    @log_endpoint_access
-    def buscar(self) -> Tuple[Dict[str, Any], int]:
+        self.service = LicitacaoService()
+    
+    def buscar(self):
         """
-        Manipula a requisição POST para /api/licitacoes/buscar.
+        Endpoint de busca de licitações
         
-        NOVA ESTRATÉGIA: Usa as MESMAS FUNÇÕES do GET, mas recebe dados via body JSON.
-        
-        Body JSON aceita:
+        Request JSON:
         {
-            "palavra_chave": "string",              // OBRIGATÓRIO - termo de busca
-            "palavras_busca": ["termo1", "termo2"], // ALTERNATIVA - lista de termos
-            "estados": ["SP", "RJ", "MG"],          // OPCIONAL - múltiplos estados
-            "cidades": ["São Paulo", "Rio"],        // OPCIONAL - múltiplas cidades  
-            "modalidades": ["pregao_eletronico"],   // OPCIONAL - múltiplas modalidades
-            "valor_minimo": 10000,                  // OPCIONAL - valor mínimo
-            "valor_maximo": 500000,                 // OPCIONAL - valor máximo
-            "usar_sinonimos": true,                 // OPCIONAL - expandir com sinônimos
-            "threshold_relevancia": 0.6             // OPCIONAL - threshold de relevância
+            "filtros": {
+                "palavra_chave": string,
+                "modalidades": list[string],
+                "estados": list[string],
+                "cidades": list[string],
+                "valor_minimo": number,
+                "valor_maximo": number
+            },
+            "fontes": list[string]  # opcional, default ["pncp"]
         }
         """
         try:
-            # 1. Extrair dados do body JSON
-            body_data = request.get_json()
-            if not body_data:
+            # Obtém os dados da requisição
+            dados = request.get_json()
+            
+            if not dados:
                 return jsonify({
-                    'success': False,
-                    'message': 'Corpo da requisição não pode ser vazio e deve ser um JSON válido.'
+                    "erro": "Dados da requisição não fornecidos",
+                    "codigo": "DADOS_AUSENTES"
                 }), 400
-
-            # 2. Extrair palavra-chave ou palavras_busca
-            palavra_chave = body_data.get('palavra_chave')
-            palavras_busca_raw = body_data.get('palavras_busca', [])
             
-            # Determinar palavras de busca finais
-            if palavra_chave:
-                # Se tem palavra_chave, converter para lista
-                palavras_busca = [palavra_chave]
-            elif palavras_busca_raw and isinstance(palavras_busca_raw, list):
-                # Se tem palavras_busca como lista, usar diretamente
-                palavras_busca = [p.strip() for p in palavras_busca_raw if p.strip()]
-            elif palavras_busca_raw and isinstance(palavras_busca_raw, str):
-                # Se palavras_busca é string, separar por espaços
-                palavras_busca = palavras_busca_raw.split()
-            else:
+            # Extrai os filtros e fontes
+            filtros = dados.get("filtros", {})
+            fontes = dados.get("fontes")  # None por padrão
+            
+            # Valida os filtros básicos
+            if not self._validar_filtros(filtros):
                 return jsonify({
-                    'success': False,
-                    'message': 'Campo "palavra_chave" ou "palavras_busca" é obrigatório.'
+                    "erro": "Filtros inválidos",
+                    "codigo": "FILTROS_INVALIDOS"
                 }), 400
-
-            if not palavras_busca:
-                return jsonify({
-                    'success': False,
-                    'message': 'Pelo menos um termo de busca deve ser fornecido.'
-                }), 400
-
-            # 3. Extrair parâmetros de paginação (query string tem prioridade)
-            pagina = request.args.get('pagina', body_data.get('pagina', 1))
-            if isinstance(pagina, str):
-                pagina = int(pagina)
             
-            itens_por_pagina = request.args.get('itens_por_pagina', body_data.get('itens_por_pagina', 500))  # ✅ AUMENTADO: padrão 500
-            if isinstance(itens_por_pagina, str):
-                itens_por_pagina = int(itens_por_pagina)
-
-            # 4. Construir filtros do body JSON (mesma lógica do GET)
-            filtros = {}
-            
-            # ✅ Estados (array direto do JSON)
-            estados = body_data.get('estados', [])
-            if estados and isinstance(estados, list):
-                filtros['estados'] = [estado.strip() for estado in estados if estado.strip()]
-            elif estados and isinstance(estados, str):
-                # Fallback: se vier como string, separar por vírgula
-                filtros['estados'] = [estado.strip() for estado in estados.split(',') if estado.strip()]
-            
-            # ✅ Cidades (array direto do JSON)
-            cidades = body_data.get('cidades', [])
-            if cidades and isinstance(cidades, list):
-                filtros['cidades'] = [cidade.strip() for cidade in cidades if cidade.strip()]
-            elif cidades and isinstance(cidades, str):
-                # Fallback: se vier como string, separar por vírgula
-                filtros['cidades'] = [cidade.strip() for cidade in cidades.split(',') if cidade.strip()]
-            
-            # ✅ Modalidades (array direto do JSON)
-            modalidades = body_data.get('modalidades', [])
-            if modalidades and isinstance(modalidades, list):
-                filtros['modalidades'] = [modalidade.strip() for modalidade in modalidades if modalidade.strip()]
-            elif modalidades and isinstance(modalidades, str):
-                # Fallback: se vier como string, separar por vírgula
-                filtros['modalidades'] = [modalidade.strip() for modalidade in modalidades.split(',') if modalidade.strip()]
-            
-            # ✅ Valores mínimo e máximo
-            if 'valor_minimo' in body_data and body_data['valor_minimo'] is not None:
-                filtros['valor_minimo'] = float(body_data['valor_minimo'])
+            # Se fontes foram especificadas, valida-as
+            if fontes is not None:
+                fontes_disponiveis = set(RegistroFontes.listar_fontes().keys())
+                fontes_invalidas = set(fontes) - fontes_disponiveis
                 
-            if 'valor_maximo' in body_data and body_data['valor_maximo'] is not None:
-                filtros['valor_maximo'] = float(body_data['valor_maximo'])
-
-            # ✅ Parâmetros específicos da estratégia Thiago
-            if 'usar_sinonimos' in body_data:
-                filtros['usar_sinonimos'] = bool(body_data['usar_sinonimos'])
-                
-            if 'threshold_relevancia' in body_data:
-                filtros['threshold_relevancia'] = float(body_data['threshold_relevancia'])
-
-            logger.info(f"🎯 Requisição POST (Nova Estratégia) - Palavras: {palavras_busca}, Filtros: {filtros}, Página: {pagina}")
-
-            # 5. 🔄 NOVO: Utilizar método principal do serviço para geração de sinônimos
-            # Preparar filtros para o serviço (inclui palavra_chave)
-            filtros['palavra_chave'] = palavra_chave or ' '.join(palavras_busca)
-
-            resultado_busca = self.licitacao_service.buscar_licitacoes(
-                filtros,
-                pagina,
-                itens_por_pagina
+                if fontes_invalidas:
+                    return jsonify({
+                        "erro": f"Fontes inválidas: {', '.join(fontes_invalidas)}",
+                        "fontes_disponiveis": list(fontes_disponiveis),
+                        "codigo": "FONTES_INVALIDAS"
+                    }), 400
+            
+            # Realiza a busca
+            resultado = self.service.buscar_licitacoes(
+                filtros=filtros,
+                fontes=fontes
             )
-
-            total_registros = resultado_busca.get('total', 0)
-
-            return jsonify({
-                'success': True,
-                'message': f"Busca realizada com sucesso. Total de {total_registros} licitações encontradas.",
-                'data': resultado_busca,
-                'metodo': 'POST com Nova Estratégia Thiago',
-                'filtros_aplicados': filtros,
-                'palavras_buscadas': resultado_busca.get('palavras_utilizadas', [])
-            }), 200
-
-        except ValueError as e:
-            # Erros de validação de dados
-            logger.warning(f"Erro de dados na requisição POST: {str(e)}")
-            return jsonify({'success': False, 'message': str(e)}), 400
             
-        except ConnectionError as e:
-            # Erros de conexão com APIs externas
-            logger.error(f"Erro de conexão: {str(e)}")
-            return jsonify({'success': False, 'message': f"Erro de comunicação com o PNCP: {e}"}), 503
-
+            return jsonify(resultado)
+            
         except Exception as e:
-            # Outros erros inesperados no servidor
-            logger.error(f"Erro inesperado no POST buscar: {str(e)}", exc_info=True)
             return jsonify({
-                'success': False,
-                'message': 'Ocorreu um erro interno no servidor.'
+                "erro": str(e),
+                "codigo": "ERRO_INTERNO"
             }), 500
-
-    @log_endpoint_access
-    def buscar_get(self) -> Tuple[Dict[str, Any], int]:
+    
+    def _validar_filtros(self, filtros: Dict) -> bool:
         """
-        Manipula a requisição GET para /api/licitacoes/buscar.
-        Extrai os filtros dos query parameters, chama o serviço e retorna a resposta formatada.
+        Valida os filtros básicos da requisição
+        
+        Args:
+            filtros: Dicionário com os filtros
+            
+        Returns:
+            True se os filtros são válidos, False caso contrário
         """
-        try:
-            # 1. Extrair parâmetros da query string
-            palavras_busca = request.args.get('palavras_busca')
-            if not palavras_busca:
-                return jsonify({
-                    'success': False,
-                    'message': 'O parâmetro "palavras_busca" é obrigatório.'
-                }), 400
-
-            # 2. Extrair outros parâmetros opcionais
-            pagina = request.args.get('pagina', default=1, type=int)
-            itens_por_pagina = request.args.get('itens_por_pagina', default=500, type=int)  # ✅ AUMENTADO: padrão 500
+        # Validações básicas dos filtros
+        if not isinstance(filtros, dict):
+            return False
+        
+        # Valida tipos dos campos (quando presentes)
+        if "palavra_chave" in filtros and not isinstance(filtros["palavra_chave"], str):
+            return False
             
-            # Construir filtros a partir dos query parameters
-            filtros = {}
+        if "modalidades" in filtros and not isinstance(filtros["modalidades"], list):
+            return False
             
-            # Estados (separados por vírgula)
-            estados_param = request.args.get('estados')
-            if estados_param:
-                filtros['estados'] = [estado.strip() for estado in estados_param.split(',') if estado.strip()]
+        if "estados" in filtros and not isinstance(filtros["estados"], list):
+            return False
             
-            # Cidades (separadas por vírgula)
-            cidades_param = request.args.get('cidades')
-            if cidades_param:
-                filtros['cidades'] = [cidade.strip() for cidade in cidades_param.split(',') if cidade.strip()]
+        if "cidades" in filtros and not isinstance(filtros["cidades"], list):
+            return False
             
-            # Modalidades (separadas por vírgula)
-            modalidades_param = request.args.get('modalidades')
-            if modalidades_param:
-                filtros['modalidades'] = [modalidade.strip() for modalidade in modalidades_param.split(',') if modalidade.strip()]
+        if "valor_minimo" in filtros and not isinstance(filtros["valor_minimo"], (int, float)):
+            return False
             
-            # Valores mínimo e máximo
-            valor_minimo = request.args.get('valor_minimo', type=float)
-            if valor_minimo is not None:
-                filtros['valor_minimo'] = valor_minimo
-                
-            valor_maximo = request.args.get('valor_maximo', type=float)
-            if valor_maximo is not None:
-                filtros['valor_maximo'] = valor_maximo
-
-            logger.info(f"Requisição GET de busca recebida. Palavras: '{palavras_busca}', Filtros: {filtros}, Página: {pagina}")
-
-            # 3. Chamar o serviço usando o repositório PNCP diretamente
-            resultado_busca = self.licitacao_service.buscar_licitacoes_pncp_simples(
-                filtros,
-                palavras_busca.split(),
-                pagina,
-                itens_por_pagina
-            )
-
-            # 4. Formatar e retornar a resposta de sucesso
-            return jsonify({
-                'success': True,
-                'message': f"Busca realizada com sucesso. Total de {resultado_busca['metadados']['totalRegistros']} licitações encontradas.",
-                'data': resultado_busca
-            }), 200
-
-        except ValueError as e:
-            # Erros de validação de dados
-            logger.warning(f"Erro de dados na requisição GET: {str(e)}")
-            return jsonify({'success': False, 'message': str(e)}), 400
-            
-        except ConnectionError as e:
-            # Erros de conexão com APIs externas
-            logger.error(f"Erro de conexão: {str(e)}")
-            return jsonify({'success': False, 'message': f"Erro de comunicação com o PNCP: {e}"}), 503
-
-        except Exception as e:
-            # Outros erros inesperados no servidor
-            logger.error(f"Erro inesperado no buscar_get: {str(e)}", exc_info=True)
-            return jsonify({
-                'success': False,
-                'message': 'Ocorreu um erro interno no servidor.'
-            }), 500 
+        if "valor_maximo" in filtros and not isinstance(filtros["valor_maximo"], (int, float)):
+            return False
+        
+        return True 

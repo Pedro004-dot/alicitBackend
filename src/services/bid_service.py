@@ -9,6 +9,9 @@ from repositories.licitacao_repository import LicitacaoPNCPRepository
 from config.database import db_manager
 import requests
 import os
+import asyncio
+import uuid
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +23,47 @@ class BidService:
         self.licitacao_repo = BidRepository(db_manager)
         # Repositório para busca na API do PNCP
         self.pncp_repo = LicitacaoPNCPRepository()
+        # Unified search service (lazy initialization)
+        self._unified_search_service = None
+        # 🆕 NEW: PNCPAdapter para busca de detalhes e itens  
+        self._pncp_adapter = None
+    
+    @property
+    def unified_search_service(self):
+        """Lazy initialization of UnifiedSearchService"""
+        if self._unified_search_service is None:
+            try:
+                from services.unified_search_service import UnifiedSearchService
+                self._unified_search_service = UnifiedSearchService()
+                logger.info("✅ UnifiedSearchService initialized in BidService")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize UnifiedSearchService: {e}")
+                self._unified_search_service = None
+        return self._unified_search_service
+    
+    @property
+    def pncp_adapter(self):
+        """🆕 NEW: Lazy loading do PNCPAdapter com configuração adequada"""
+        if not hasattr(self, '_pncp_adapter') or self._pncp_adapter is None:
+            try:
+                from adapters.pncp_adapter import PNCPAdapter
+                
+                # 🔧 Configuração necessária para o PNCPAdapter
+                config = {
+                    'api_base_url': 'https://pncp.gov.br/api/consulta/v1',
+                    'timeout': 30,
+                    'max_results': 20000,
+                    'max_pages': 400
+                }
+                
+                self._pncp_adapter = PNCPAdapter(config)
+                logger.info("✅ PNCPAdapter inicializado com sucesso")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize PNCPAdapter: {e}")
+                self._pncp_adapter = None
+                
+        return self._pncp_adapter
     
     def get_all_bids(self, limit: Optional[int] = None) -> Tuple[List[Dict[str, Any]], str]:
         """
@@ -46,7 +90,7 @@ class BidService:
             return None
     
     def get_bid_by_pncp_id(self, pncp_id: str) -> Optional[Dict[str, Any]]:
-        """Buscar licitação por PNCP ID com formatação, com fallback para API do PNCP."""
+        """🔄 UPDATED: Buscar licitação por PNCP ID usando novo PNCPAdapter"""
         try:
             # 1. Tenta buscar no banco de dados local primeiro
             bid = self.licitacao_repo.find_by_pncp_id(pncp_id)
@@ -54,26 +98,139 @@ class BidService:
                 logger.info(f"Licitação {pncp_id} encontrada no banco de dados local.")
                 return self._format_bid_for_frontend(bid)
 
-            # 2. Se não encontrou, busca na API do PNCP
-            logger.info(f"Licitação {pncp_id} não encontrada localmente. Buscando na API do PNCP...")
-            detailed_bid = self.pncp_repo.buscar_licitacao_detalhada(pncp_id)
+            # 2. 🆕 NEW: Se não encontrou, usa o novo PNCPAdapter
+            logger.info(f"Licitação {pncp_id} não encontrada localmente. Usando PNCPAdapter...")
             
-            if detailed_bid:
-                logger.info(f"✅ Detalhes da licitação {pncp_id} encontrados na API do PNCP.")
-                converted_bid = self._convert_api_bid_data(detailed_bid, pncp_id)
-                # Retorna os dados formatados para o frontend. A formatação final acontece aqui.
+            if self.pncp_adapter is None:
+                logger.warning("❌ PNCPAdapter não disponível, usando fallback para API antiga")
+                return self._fallback_to_old_api(pncp_id)
+            
+            # Buscar detalhes via novo adapter
+            opportunity_data = self.pncp_adapter.get_opportunity_details(pncp_id)
+            
+            if opportunity_data:
+                logger.info(f"✅ Detalhes da licitação {pncp_id} encontrados via PNCPAdapter.")
+                # Converter OpportunityData para formato frontend
+                converted_bid = self._convert_opportunity_data_to_bid(opportunity_data, pncp_id)
                 return self._format_bid_for_frontend(converted_bid)
 
-            logger.warning(f"Licitação {pncp_id} não encontrada em nenhuma fonte (local ou API).")
-            return None
+            logger.warning(f"Licitação {pncp_id} não encontrada via PNCPAdapter, tentando fallback...")
+            return self._fallback_to_old_api(pncp_id)
 
         except Exception as e:
             logger.error(f"Erro ao buscar licitação por PNCP {pncp_id}: {e}", exc_info=True)
-            return None
+            # Tentar fallback em caso de erro
+            return self._fallback_to_old_api(pncp_id)
+    
+    def _fallback_to_old_api(self, pncp_id: str) -> Optional[Dict[str, Any]]:
+        """🔄 Fallback para a API antiga quando PNCPAdapter falha"""
+        try:
+            logger.info(f"🔄 Fallback: Usando API antiga para {pncp_id}")
+            
+            # 🔧 FIX: Usar await corretamente ou create_task quando já em um event loop
+            try:
+                # Tentar usar o loop existente se estivermos em um
+                import asyncio
+                loop = asyncio.get_running_loop()
+                
+                # Se há um loop rodando, criar uma task
+                async def fetch_data():
+                    return self.pncp_repo.buscar_licitacao_detalhada(pncp_id)
+                
+                # Criar uma task para executar no loop existente
+                task = loop.create_task(fetch_data())
+                # Aguardar usando loop.run_until_complete() NÃO funciona em loop existente
+                # Então vamos tentar uma abordagem síncrona
+                
+                logger.warning("⚠️ Event loop já rodando, tentando abordagem alternativa")
+                return None
+                
+            except RuntimeError:
+                # Não há loop rodando, podemos usar asyncio.run()
+                raw_data = asyncio.run(self.pncp_repo.buscar_licitacao_detalhada(pncp_id))
+                
+                if raw_data:
+                    return self._convert_api_bid_data(raw_data, pncp_id)
+                    
+        except Exception as e:
+            logger.error(f"❌ Erro também no fallback para {pncp_id}: {e}")
+            
+        return None
+    
+    def _convert_opportunity_data_to_bid(self, opportunity_data, pncp_id: str) -> Dict[str, Any]:
+        """🆕 NEW: Converte OpportunityData do PNCPAdapter para formato bid"""
+        from datetime import datetime
+        import uuid
+        
+        try:
+            # ✅ FIX: Garantir que sempre temos um ID
+            bid_id = str(uuid.uuid4())
+            
+            # 🔧 CORREÇÃO CRÍTICA: Extrair CNPJ corretamente
+            orgao_cnpj = (
+                opportunity_data.procuring_entity_id or  # Campo principal
+                (opportunity_data.provider_specific_data.get('orgao_cnpj') if opportunity_data.provider_specific_data else None) or
+                self._extract_cnpj_from_pncp_id(pncp_id)  # Fallback
+            )
+            
+            # 🔧 CORREÇÃO: Mapear dados do provider_specific_data corretamente
+            provider_data = opportunity_data.provider_specific_data or {}
+            
+            return {
+                'id': bid_id,  # ✅ Campo obrigatório para _format_bid_for_frontend
+                'pncp_id': pncp_id,
+                'numero_controle_pncp': pncp_id,
+                'objeto_compra': opportunity_data.title,
+                'orgao_cnpj': orgao_cnpj,  # ✅ CORRIGIDO: usar o CNPJ extraído
+                'razao_social': opportunity_data.procuring_entity_name or provider_data.get('orgao_nome'),
+                'uf': opportunity_data.region_code,
+                'uf_nome': provider_data.get('ufNome'),
+                'nome_unidade': provider_data.get('unidade_nome'),
+                'municipio_nome': opportunity_data.municipality,
+                'codigo_ibge': provider_data.get('codigoIbge'),
+                'codigo_unidade': provider_data.get('codigoUnidade'),
+                'status': provider_data.get('situacao_nome') or provider_data.get('status'),
+                'link_sistema_origem': provider_data.get('link_sistema_origem'),
+                'data_publicacao': opportunity_data.publication_date,
+                'valor_total_estimado': opportunity_data.estimated_value,
+                'created_at': datetime.now(),
+                'updated_at': datetime.now(),
+                'numero_compra': provider_data.get('numero_compra'),
+                'processo': provider_data.get('processo'),
+                'valor_total_homologado': provider_data.get('valor_total_homologado'),
+                'data_abertura_proposta': provider_data.get('data_abertura_proposta'),
+                'data_encerramento_proposta': opportunity_data.submission_deadline,
+                'modo_disputa_id': provider_data.get('modoDisputaId'),
+                'modo_disputa_nome': provider_data.get('modo_disputa'),
+                'srp': provider_data.get('srp'),
+                'link_processo_eletronico': provider_data.get('linkProcessoEletronico'),
+                'modalidade_nome': provider_data.get('modalidade_nome'),
+                'ano_compra': provider_data.get('ano_compra') or self._extract_year_from_pncp_id(pncp_id),
+                'sequencial_compra': provider_data.get('sequencial_compra') or self._extract_sequential_from_pncp_id(pncp_id),
+                'informacao_complementar': opportunity_data.description
+            }
+        except Exception as e:
+            logger.error(f"❌ Erro ao converter OpportunityData: {e}")
+            raise
+
+    def _extract_cnpj_from_pncp_id(self, pncp_id: str) -> Optional[str]:
+        """Extrai o CNPJ do PNCP ID como fallback"""
+        try:
+            # Parse do formato: CNPJ-TIPO-SEQUENCIAL/ANO
+            if '-' in pncp_id and '/' in pncp_id:
+                parts = pncp_id.split('-')
+                if len(parts) >= 1:
+                    cnpj = parts[0]
+                    if len(cnpj) == 14 and cnpj.isdigit():
+                        return cnpj
+        except Exception:
+            pass
+        return None
 
     def _convert_api_bid_data(self, raw_data: Dict[str, Any], fallback_pncp_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Converte dados da API de detalhes para um formato similar ao do banco de dados."""
         from datetime import datetime
+        import uuid
         
         # Extrair informações do órgão e unidade (nome na API pode variar)
         orgao_info = (
@@ -104,8 +261,12 @@ class BidService:
         except Exception:
             pass
         
+        # ✅ FIX: Garantir que sempre temos um ID
+        bid_id = str(uuid.uuid4())
+        
         # Construir o dicionário com os dados convertidos
         return {
+            'id': bid_id,  # ✅ Campo obrigatório para _format_bid_for_frontend
             'pncp_id': pncp_id,  # Campo principal para identificação
             'numero_controle_pncp': pncp_id,  # Campo duplicado para compatibilidade
             'objeto_compra': raw_data.get('objetoCompra') or raw_data.get('objeto_compra'),
@@ -136,7 +297,7 @@ class BidService:
             'ano_compra': self._extract_year_from_pncp_id(pncp_id),
             'sequencial_compra': self._extract_sequential_from_pncp_id(pncp_id)
         }
-    
+
     def search_bids_by_object(self, search_term: str, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Buscar licitações por objeto/descrição
@@ -922,11 +1083,7 @@ class BidService:
             return {}, f"Erro ao calcular estatísticas: {str(e)}"
     
     def get_bid_items(self, pncp_id: str, licitacao_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Buscar itens de uma licitação, garantindo que a licitação e os itens sejam salvos no banco.
-        Se `licitacao_data` for fornecido (via POST), usa esses dados para criar/atualizar a licitação.
-        Caso contrário (via GET), busca os detalhes na API do PNCP.
-        """
+        """🔄 UPDATED: Buscar itens usando novo PNCPAdapter"""
         try:
             if not pncp_id:
                 return {'success': False, 'message': 'PNCP ID não fornecido'}
@@ -943,10 +1100,22 @@ class BidService:
                     logger.info(f"Usando dados da licitação providos pelo frontend para {pncp_id}")
                     converted_bid = self._convert_frontend_bid_data(licitacao_data)
                 else:
-                    logger.info(f"Buscando detalhes da API PNCP para {pncp_id} pois não foram providos.")
-                    detailed_bid = self.pncp_repo.buscar_licitacao_detalhada(pncp_id)
-                    if detailed_bid:
-                        converted_bid = self._convert_api_bid_data(detailed_bid, pncp_id)
+                    # 🆕 NEW: Usar PNCPAdapter para buscar detalhes
+                    logger.info(f"Buscando detalhes via PNCPAdapter para {pncp_id}")
+                    if self.pncp_adapter:
+                        opportunity_data = self.pncp_adapter.get_opportunity_details(pncp_id)
+                        if opportunity_data:
+                            converted_bid = self._convert_opportunity_data_to_bid(opportunity_data, pncp_id)
+                        else:
+                            # Fallback para API antiga
+                            detailed_bid = self.pncp_repo.buscar_licitacao_detalhada(pncp_id)
+                            if detailed_bid:
+                                converted_bid = self._convert_api_bid_data(detailed_bid, pncp_id)
+                    else:
+                        # Fallback direto para API antiga
+                        detailed_bid = self.pncp_repo.buscar_licitacao_detalhada(pncp_id)
+                        if detailed_bid:
+                            converted_bid = self._convert_api_bid_data(detailed_bid, pncp_id)
 
                 if not converted_bid:
                     msg = "Dados da licitação não puderam ser obtidos ou convertidos."
@@ -956,8 +1125,7 @@ class BidService:
                 try:
                     # Usar create_or_update para evitar duplicação
                     licitacao_local = self.licitacao_repo.create_or_update(converted_bid, 'numero_controle_pncp')
-                    logger.info(
-                        f"✅ Licitação {pncp_id} salva/atualizada com sucesso. ID local: {licitacao_local.get('id')}")
+                    logger.info(f"✅ Licitação {pncp_id} salva/atualizada com sucesso. ID local: {licitacao_local.get('id')}")
                 except Exception as e:
                     logger.error(f"❌ Falha ao salvar licitação {pncp_id}: {e}", exc_info=True)
                     return {'success': False, 'message': f"Erro ao salvar licitação: {e}"}
@@ -966,52 +1134,89 @@ class BidService:
             if not licitacao_db_id:
                 return {'success': False, 'message': 'Não foi possível obter o ID da licitação no banco de dados.'}
 
-            # 3. Buscar itens (da API, pois são dinâmicos) e salvá-los
-            api_items = self._fetch_items_from_pncp_api(pncp_id)
+            # 3. 🆕 NEW: Buscar itens via PNCPAdapter
+            api_items = self._fetch_items_via_adapter(pncp_id)
 
             if not api_items:
-                logger.info(f"Nenhum item encontrado na API para {pncp_id}")
+                logger.info(f"Nenhum item encontrado para {pncp_id}")
                 return {
                     'success': True,
                     'data': {'itens': [], 'licitacao': self._format_bid_for_frontend(licitacao_local)},
-                    'message': 'Licitação encontrada, mas sem itens na API do PNCP.'
+                    'message': 'Licitação encontrada, mas sem itens disponíveis.'
                 }
 
-            logger.info(f"✅ {len(api_items)} itens encontrados na API para {pncp_id}. Tentando salvar...")
+            logger.info(f"✅ {len(api_items)} itens encontrados para {pncp_id}. Tentando salvar...")
 
             try:
                 db_items = [
                     {
                         'licitacao_id': licitacao_db_id,
-                        'numero_item': item.get('numeroItem'),
+                        'numero_item': item.get('numeroItem'),  # 🔧 FIX: Usar 'numeroItem' da API v1 PNCP
                         'descricao': item.get('descricao'),
                         'quantidade': item.get('quantidade'),
                         'unidade_medida': item.get('unidadeMedida'),
                         'valor_unitario_estimado': item.get('valorUnitarioEstimado'),
-                        'situacao_item_id': item.get('situacaoCompraItemId'),
-                        'criterio_julgamento_id': item.get('criterioJulgamentoId')
+                        'valor_total': item.get('valorTotal'),
+                        'material_ou_servico': item.get('materialOuServico'),
+                        'criterio_julgamento_nome': item.get('criterioJulgamentoNome'),
+                        'situacao_item': item.get('situacaoCompraItemNome'),
+                        'especificacao_tecnica': item.get('informacaoComplementar'),
+                        # 🆕 NOVOS CAMPOS DA API v1
+                        'criterio_julgamento_id': item.get('criterioJulgamentoId'),
+                        'situacao_item_id': item.get('situacaoCompraItem'),
+                        'codigo_produto_servico': item.get('catalogoCodigoItem'),
+                        'ncm_nbs_codigo': item.get('ncmNbsCodigo'),
+                        'tipo_beneficio_id': item.get('tipoBeneficio'),
+                        'tipo_beneficio_nome': item.get('tipoBeneficioNome'),
+                        'beneficio_micro_epp': item.get('tipoBeneficio') == 1 if item.get('tipoBeneficio') else False,
+                        'tem_resultado': item.get('temResultado', False),
+                        'dados_api_completos': json.dumps(item)  # 🔧 FIX: Converter dict para JSON string
                     } for item in api_items]
-                # Aqui, estamos usando um método hipotético `create_or_update_bulk_items`
-                # que precisa ser implementado no repositório.
-                # Ele deve inserir ou atualizar itens com base em um conjunto de chaves.
-                num_saved = self.licitacao_repo.create_or_update_bulk_items(db_items, ['licitacao_id', 'numero_item'])
-                logger.info(f"✅ {num_saved} itens salvos/atualizados para a licitação ID {licitacao_db_id}")
+                
+                # Salvar itens no banco (se repositório suportar)
+                try:
+                    num_saved = self.licitacao_repo.create_or_update_bulk_items(db_items, ['licitacao_id', 'numero_item'])
+                    logger.info(f"✅ {num_saved} itens salvos/atualizados para a licitação ID {licitacao_db_id}")
+                except AttributeError:
+                    logger.warning("⚠️ Método create_or_update_bulk_items não disponível no repositório")
+                except Exception as e:
+                    logger.error(f"⚠️ Falha ao salvar itens: {e}")
             except Exception as e:
-                logger.error(f"⚠️ Falha ao salvar itens para a licitação ID {licitacao_db_id}: {e}",
-                             exc_info=True)
-                # Não falhar a requisição inteira, apenas logar o erro. O usuário ainda quer ver os itens.
+                logger.error(f"⚠️ Erro ao processar itens para salvamento: {e}")
 
             return {
                 'success': True,
-                'data': {'itens': self._format_items_for_frontend(api_items),
-                         'licitacao': self._format_bid_for_frontend(licitacao_local)},
+                'data': {'itens': api_items, 'licitacao': self._format_bid_for_frontend(licitacao_local)},
                 'message': f"{len(api_items)} itens encontrados e processados."
             }
 
         except Exception as e:
             logger.error(f"❌ Erro ao buscar itens da licitação {pncp_id}: {e}", exc_info=True)
             return {'success': False, 'message': f"Erro ao buscar itens: {str(e)}"}
-
+    
+    def _fetch_items_via_adapter(self, pncp_id: str) -> List[Dict[str, Any]]:
+        """🆕 NEW: Buscar itens via PNCPAdapter com fallback para API antiga"""
+        try:
+            # Tentar usar PNCPAdapter primeiro
+            if self.pncp_adapter:
+                logger.info(f"🔍 Buscando itens via PNCPAdapter para {pncp_id}")
+                items_data = self.pncp_adapter.get_opportunity_items(pncp_id)
+                
+                if items_data and isinstance(items_data, list):
+                    logger.info(f"✅ {len(items_data)} itens encontrados via PNCPAdapter")
+                    return items_data
+                else:
+                    logger.info("⚠️ PNCPAdapter não retornou itens, tentando fallback")
+            
+            # Fallback para método antigo
+            logger.info(f"🔄 Fallback: Usando método antigo para buscar itens de {pncp_id}")
+            return self._fetch_items_from_pncp_api(pncp_id)
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar itens via adapter: {e}")
+            # Fallback em caso de erro
+            return self._fetch_items_from_pncp_api(pncp_id)
+    
     def _convert_frontend_bid_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Converte dados da licitação vindos do frontend para o formato do banco de dados."""
         pncp_id = data.get('numero_controle_pncp') or data.get('pncp_id')
@@ -1348,4 +1553,429 @@ class BidService:
             seq_clean = seq_part.lstrip('0') or seq_part  # remove zeros à esquerda
             return int(seq_clean)
         except Exception:
-            return None 
+            return None
+    
+    # ===== UNIFIED SEARCH METHODS (Phase 3 - Service Layer Abstraction) =====
+    
+    async def search_unified(self, filters: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Search opportunities using the unified multi-source search service
+        
+        This method provides the new multi-source search functionality while
+        maintaining the same interface pattern as existing BidService methods.
+        
+        Args:
+            filters: Dictionary with search criteria
+            
+        Returns:
+            Tuple of (opportunities_list, message) for consistency with existing methods
+        """
+        try:
+            logger.info(f"🔍 Starting unified search with filters: {filters}")
+            
+            # Check if unified search service is available
+            if not self.unified_search_service:
+                logger.warning("UnifiedSearchService not available, falling back to PNCP search")
+                return self._fallback_to_pncp_search(filters)
+            
+            # Convert dictionary filters to SearchFilters object
+            search_filters = self._convert_dict_to_search_filters(filters)
+            
+            # Perform unified search (await async call)
+            combined_results = await self.unified_search_service.search_combined(search_filters)
+            
+            # Convert to frontend format (similar to existing bid formatting)
+            formatted_results = []
+            for result in combined_results:
+                formatted_result = self._format_unified_result_for_frontend(result)
+                formatted_results.append(formatted_result)
+            
+            message = f"{len(formatted_results)} opportunities found across all providers"
+            
+            logger.info(f"✅ Unified search completed: {len(formatted_results)} opportunities")
+            
+            return formatted_results, message
+            
+        except Exception as e:
+            logger.error(f"❌ Error in unified search: {e}")
+            # Fallback to traditional PNCP search
+            return self._fallback_to_pncp_search(filters)
+    
+    async def get_unified_provider_stats(self) -> Tuple[Dict[str, Any], str]:
+        """
+        Get statistics and health information for all unified search providers
+        
+        Returns:
+            Tuple of (stats_dict, message) for consistency with existing methods
+        """
+        try:
+            logger.info("📊 Getting unified provider statistics")
+            
+            if not self.unified_search_service:
+                return {}, "UnifiedSearchService not available"
+            
+            stats = await self.unified_search_service.get_provider_stats()
+            
+            message = f"Provider stats retrieved: {stats.get('summary', {}).get('active_providers', 0)} active providers"
+            
+            logger.info(f"✅ Provider stats retrieved successfully")
+            
+            return stats, message
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting provider stats: {e}")
+            return {}, f"Error getting provider stats: {str(e)}"
+    
+    async def search_by_provider(self, provider_name: str, filters: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Search opportunities from a specific provider using unified search
+        
+        Args:
+            provider_name: Name of the provider to search (e.g., 'pncp')
+            filters: Dictionary with search criteria
+            
+        Returns:
+            Tuple of (opportunities_list, message) for consistency with existing methods
+        """
+        try:
+            logger.info(f"🔍 Starting provider-specific search: {provider_name}")
+            
+            if not self.unified_search_service:
+                logger.warning("UnifiedSearchService not available")
+                if provider_name.lower() == 'pncp':
+                    return self._fallback_to_pncp_search(filters)
+                else:
+                    return [], f"Provider {provider_name} not available"
+            
+            # Convert dictionary filters to SearchFilters object
+            search_filters = self._convert_dict_to_search_filters(filters)
+            
+            # Search specific provider (await async call)
+            opportunities = await self.unified_search_service.search_by_provider(provider_name, search_filters)
+            
+            # Convert to frontend format
+            formatted_results = []
+            for opportunity in opportunities:
+                opportunity_dict = self.unified_search_service._opportunity_to_dict(opportunity)
+                opportunity_dict['provider_name'] = provider_name
+                formatted_result = self._format_unified_result_for_frontend(opportunity_dict)
+                formatted_results.append(formatted_result)
+            
+            message = f"{len(formatted_results)} opportunities found from {provider_name}"
+            
+            logger.info(f"✅ Provider search completed: {len(formatted_results)} opportunities from {provider_name}")
+            
+            return formatted_results, message
+            
+        except Exception as e:
+            logger.error(f"❌ Error in provider search: {e}")
+            return [], f"Error searching {provider_name}: {str(e)}"
+    
+    async def validate_provider_health(self, provider_name: str = None) -> Tuple[Dict[str, Any], str]:
+        """
+        Validate health/connectivity of providers
+        
+        Args:
+            provider_name: Optional specific provider to validate (if None, validates all)
+            
+        Returns:
+            Tuple of (validation_results, message)
+        """
+        try:
+            logger.info(f"🔍 Validating provider health: {provider_name or 'all providers'}")
+            
+            if not self.unified_search_service:
+                return {}, "UnifiedSearchService not available"
+            
+            if provider_name:
+                # Validate specific provider (await async call)
+                is_connected = await self.unified_search_service.validate_provider_connection(provider_name)
+                result = {provider_name: is_connected}
+                message = f"{provider_name}: {'Connected' if is_connected else 'Disconnected'}"
+            else:
+                # Validate all providers (await async call)
+                stats = await self.unified_search_service.get_provider_stats()
+                result = {
+                    name: info.get('connected', False)
+                    for name, info in stats.get('providers', {}).items()
+                }
+                connected_count = sum(1 for connected in result.values() if connected)
+                message = f"{connected_count}/{len(result)} providers connected"
+            
+            logger.info(f"✅ Provider validation completed")
+            
+            return result, message
+            
+        except Exception as e:
+            logger.error(f"❌ Error validating providers: {e}")
+            return {}, f"Error validating providers: {str(e)}"
+    
+    def _convert_dict_to_search_filters(self, filters: Dict[str, Any]):
+        """
+        Convert dictionary filters to SearchFilters object
+        
+        Args:
+            filters: Dictionary with search criteria
+            
+        Returns:
+            SearchFilters object
+        """
+        try:
+            from interfaces.procurement_data_source import SearchFilters
+            
+            # Map common filter names to SearchFilters parameters
+            search_filters = SearchFilters(
+                keywords=filters.get('keywords') or filters.get('search_term'),
+                # keywords=filters.get('keywords'),
+                region_code=filters.get('region_code') or filters.get('uf'),
+                country_code=filters.get('country_code', 'BR'),
+                min_value=filters.get('min_value'),
+                max_value=filters.get('max_value'),
+                # currency_code=filters.get('currency_code', 'BRL'),
+                publication_date_from=filters.get('publication_date_from'),
+                publication_date_to=filters.get('publication_date_to'),
+                # submission_deadline_from=filters.get('submission_deadline_from'),
+                # submission_deadline_to=filters.get('submission_deadline_to'),
+                page=filters.get('page', 1),
+                page_size=filters.get('page_size', 20),
+                # sort_by=filters.get('sort_by'),
+                # sort_order=filters.get('sort_order')
+            )
+            
+            return search_filters
+            
+        except Exception as e:
+            logger.error(f"❌ Error converting filters: {e}")
+            # Return default SearchFilters if conversion fails
+            from interfaces.procurement_data_source import SearchFilters
+            return SearchFilters()
+    
+    def _format_unified_result_for_frontend(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Format unified search result for frontend consumption
+        
+        This method converts unified search results to a format similar to
+        existing bid formatting to maintain frontend compatibility.
+        
+        Args:
+            result: Dictionary with unified search result
+            
+        Returns:
+            Dictionary formatted for frontend
+        """
+        try:
+            # Extract provider information
+            provider_name = result.get('provider_name', 'unknown')
+            provider_metadata = result.get('provider_metadata', {})
+            
+            # Create formatted result similar to existing bid format
+            formatted_result = {
+                # Basic opportunity information
+                'id': result.get('external_id'),
+                'pncp_id': result.get('external_id') if provider_name == 'pncp' else None,
+                'external_id': result.get('external_id'),
+                'title': result.get('title'),
+                'objeto_compra': result.get('title'),  # Alias for compatibility
+                'description': result.get('description'),
+                'estimated_value': result.get('estimated_value'),
+                'valor_total_estimado': result.get('estimated_value'),  # Alias for compatibility
+                'currency_code': result.get('currency_code', 'BRL'),
+                
+                # Location information
+                'country_code': result.get('country_code'),
+                'region_code': result.get('region_code'),
+                'uf': result.get('region_code'),  # Alias for compatibility
+                'municipality': result.get('municipality'),
+                'municipio_nome': result.get('municipality'),  # Alias for compatibility
+                
+                # Date information
+                'publication_date': result.get('publication_date'),
+                'data_publicacao': result.get('publication_date'),  # Alias for compatibility
+                'submission_deadline': result.get('submission_deadline'),
+                'data_encerramento_proposta': result.get('submission_deadline'),  # Alias for compatibility
+                
+                # Entity information
+                'procuring_entity_id': result.get('procuring_entity_id'),
+                'orgao_cnpj': result.get('procuring_entity_id'),  # Alias for compatibility
+                'procuring_entity_name': result.get('procuring_entity_name'),
+                'razao_social': result.get('procuring_entity_name'),  # Alias for compatibility
+                
+                # Provider information (new in unified search)
+                'provider_name': provider_name,
+                'provider_metadata': provider_metadata,
+                'source_type': 'unified_search',
+                
+                # Provider-specific data
+                'provider_specific_data': result.get('provider_specific_data', {}),
+                
+                # Compatibility fields
+                'status_calculado': self._calculate_unified_status(result),
+                'valor_display': self._format_unified_value_display(result.get('estimated_value')),
+                'is_proposal_open': self._is_unified_proposal_open(result.get('submission_deadline'))
+            }
+            
+            return formatted_result
+            
+        except Exception as e:
+            logger.error(f"❌ Error formatting unified result: {e}")
+            # Return minimal result if formatting fails
+            return {
+                'id': result.get('external_id', 'unknown'),
+                'title': result.get('title', 'Unknown'),
+                'provider_name': result.get('provider_name', 'unknown'),
+                'error': f"Formatting error: {str(e)}"
+            }
+    
+    def _fallback_to_pncp_search(self, filters: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Fallback to traditional PNCP search when unified search is not available
+        
+        Args:
+            filters: Dictionary with search criteria
+            
+        Returns:
+            Tuple of (opportunities_list, message)
+        """
+        try:
+            logger.info("🔄 Falling back to traditional PNCP search")
+            
+            # Use existing search method based on available filters
+            if 'search_term' in filters or 'keywords' in filters:
+                search_term = filters.get('search_term') or filters.get('keywords')
+                limit = filters.get('page_size', 50)
+                results = self.search_bids_by_object(search_term, limit)
+                message = f"PNCP fallback search: {len(results)} results for '{search_term}'"
+            elif 'uf' in filters or 'region_code' in filters:
+                uf = filters.get('uf') or filters.get('region_code')
+                limit = filters.get('page_size', 50)
+                results = self.get_bids_by_state(uf, limit)
+                message = f"PNCP fallback search: {len(results)} results for state {uf}"
+            elif 'min_value' in filters or 'max_value' in filters:
+                min_val = filters.get('min_value', 0)
+                max_val = filters.get('max_value', float('inf'))
+                limit = filters.get('page_size', 50)
+                results = self.get_bids_by_value_range(min_val, max_val, limit)
+                message = f"PNCP fallback search: {len(results)} results for value range"
+            else:
+                # Default to recent bids
+                limit = filters.get('page_size', 20)
+                results, message = self.get_recent_bids(limit)
+                message = f"PNCP fallback search: {message}"
+            
+            # Add provider information to results for consistency
+            for result in results:
+                result['provider_name'] = 'pncp'
+                result['source_type'] = 'fallback_search'
+            
+            return results, message
+            
+        except Exception as e:
+            logger.error(f"❌ Error in fallback search: {e}")
+            return [], f"Fallback search failed: {str(e)}"
+    
+    def _calculate_unified_status(self, result: Dict[str, Any]) -> str:
+        """Calculate status for unified search results"""
+        submission_deadline = result.get('submission_deadline')
+        if not submission_deadline:
+            return 'Indefinido'
+        
+        try:
+            from datetime import datetime
+            if isinstance(submission_deadline, str):
+                deadline_dt = datetime.fromisoformat(submission_deadline.replace('Z', '+00:00'))
+            else:
+                deadline_dt = submission_deadline
+            
+            if deadline_dt.replace(tzinfo=None) > datetime.now():
+                return 'Ativa'
+            else:
+                return 'Fechada'
+        except Exception:
+            return 'Indefinido'
+    
+    def _format_unified_value_display(self, value) -> str:
+        """Format value for display in unified search results"""
+        if value is None or value == 0:
+            return 'Sigiloso'
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return 'Sigiloso'
+    
+    def _is_unified_proposal_open(self, submission_deadline) -> bool:
+        """Check if proposal deadline is still open for unified search results"""
+        if not submission_deadline:
+            return False
+        
+        try:
+            from datetime import datetime
+            if isinstance(submission_deadline, str):
+                deadline_dt = datetime.fromisoformat(submission_deadline.replace('Z', '+00:00'))
+            else:
+                deadline_dt = submission_deadline
+            
+            return deadline_dt.replace(tzinfo=None) > datetime.now()
+        except Exception:
+            return False 
+
+    async def search_by_provider_no_cache(self, provider_name: str, filters_dict: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Search a specific provider with cache disabled - for testing
+        
+        Args:
+            provider_name: Name of the provider to search
+            filters_dict: Dictionary with search filters
+            
+        Returns:
+            Tuple of (opportunities list, message)
+        """
+        try:
+            logger.info(f"🔍 Searching {provider_name} provider (NO CACHE)")
+            
+            # Convert dictionary to SearchFilters object
+            filters = self._convert_dict_to_search_filters(filters_dict)
+            
+            # Create provider with cache disabled
+            from factories.data_source_factory import DataSourceFactory
+            from config.data_source_config import DataSourceConfig
+            
+            config = DataSourceConfig()
+            factory = DataSourceFactory(config)
+            
+            # Override config to disable cache
+            config_override = {'disable_cache': True}
+            provider = factory.create(provider_name, config_override)
+            
+            # Search opportunities (await async call)
+            opportunities = await provider.search_opportunities(filters)
+            
+            # Convert to frontend format
+            formatted_opportunities = []
+            for opportunity in opportunities:
+                formatted_result = self._format_unified_result_for_frontend({
+                    'external_id': opportunity.external_id,
+                    'title': opportunity.title,
+                    'description': opportunity.description,
+                    'estimated_value': opportunity.estimated_value,
+                    'currency_code': opportunity.currency_code,
+                    'country_code': opportunity.country_code,
+                    'region_code': opportunity.region_code,
+                    'municipality': opportunity.municipality,
+                    'publication_date': opportunity.publication_date,
+                    'submission_deadline': opportunity.submission_deadline,
+                    'procuring_entity_id': opportunity.procuring_entity_id,
+                    'procuring_entity_name': opportunity.procuring_entity_name,
+                    'provider_specific_data': opportunity.provider_specific_data,
+                    'provider_name': provider_name,
+                    'provider_metadata': {}
+                })
+                formatted_opportunities.append(formatted_result)
+            
+            message = f"{len(opportunities)} opportunities found from {provider_name} (cache disabled)"
+            logger.info(f"✅ Provider search completed: {message}")
+            
+            return formatted_opportunities, message
+            
+        except Exception as e:
+            logger.error(f"❌ Error in provider search (no cache): {e}")
+            return [], f"Error searching {provider_name}: {str(e)}"

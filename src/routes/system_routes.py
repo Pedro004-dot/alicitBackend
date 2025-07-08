@@ -2,19 +2,30 @@
 Rotas para operações de sistema
 """
 from flask import Blueprint, request, jsonify
-from controllers.system_controller import SystemController
 import logging
 from datetime import datetime
 import threading
 import time
 
+from config.database import DatabaseManager
+from services.system_service import SystemService
+from services.match_service import MatchService
+from services.company_service import CompanyService
+from services.bid_service import BidService
+from services.cache_service import CacheService
+
 logger = logging.getLogger(__name__)
 
 # Criar blueprint para sistema
 system_routes = Blueprint('system', __name__)
+db_manager = DatabaseManager()
 
-# Instanciar controller
-controller = SystemController()
+# Instanciar serviços
+system_service = SystemService()
+match_service = MatchService()
+company_service = CompanyService()
+bid_service = BidService()
+cache_service = CacheService()
 
 # ====== ROTAS DE SISTEMA ======
 
@@ -34,7 +45,7 @@ def health_check():
     - Timestamp da verificação e tempo de resposta
     - Versão da aplicação e informações do ambiente
     """
-    return controller.health_check()
+    return system_service.health_check()
 
 @system_routes.route('/api/status', methods=['GET'])
 def get_system_status():
@@ -52,7 +63,7 @@ def get_system_status():
     - Métricas de performance e memória
     - Status dos serviços dependentes
     """
-    return controller.get_system_status()
+    return system_service.get_system_status()
 
 @system_routes.route('/api/status/daily-bids', methods=['GET'])
 def get_daily_bids_status():
@@ -70,7 +81,7 @@ def get_daily_bids_status():
     - Quantidade de licitações encontradas na última busca
     - Próxima execução programada
     """
-    return controller.get_daily_bids_status()
+    return system_service.get_daily_bids_status()
 
 @system_routes.route('/api/status/reevaluate', methods=['GET'])
 def get_reevaluate_status():
@@ -88,7 +99,7 @@ def get_reevaluate_status():
     - Timestamp de início e estimativa de conclusão
     - Estatísticas de matches atualizados
     """
-    return controller.get_reevaluate_status()
+    return system_service.get_reevaluate_status()
 
 @system_routes.route('/api/config/options', methods=['GET'])
 def get_config_options():
@@ -106,7 +117,7 @@ def get_config_options():
     - Configurações de notificações e alertas
     - Limites de API e timeouts
     """
-    return controller.get_config_options()
+    return system_service.get_config_options()
 
 @system_routes.route('/api/search-new-bids', methods=['POST'], strict_slashes=False)
 def search_new_bids():
@@ -128,7 +139,7 @@ def search_new_bids():
     - ID do processo para acompanhamento
     - Estimativa de tempo de execução
     """
-    return controller.search_new_bids()
+    return system_service.search_new_bids()
 
 # 🔥 NOVA ROTA: Busca semanal com validação LLM QWEN
 @system_routes.route('/api/search-weekly-bids', methods=['POST', 'GET'], strict_slashes=False)
@@ -313,7 +324,7 @@ def reevaluate_bids():
     - ID do processo para monitoramento
     - Quantidade estimada de registros a processar
     """
-    return controller.reevaluate_bids()
+    return system_service.reevaluate_bids()
 
 # 🧪 NOVA ROTA: Reprocessar licitações existentes para testar o fix
 @system_routes.route('/api/reprocess-existing-bids', methods=['POST', 'GET'], strict_slashes=False)
@@ -518,7 +529,6 @@ def run_date_range_reeval_matching(data_inicio: str, data_fim: str, clear_matche
     """
     try:
         # Usar conexão direta com PostgreSQL em vez do Supabase API
-        from config.database import db_manager
         import time
         
         logger.info("🚀 INICIANDO REAVALIAÇÃO POR INTERVALO DE DATAS")
@@ -647,3 +657,30 @@ def register_system_routes(app):
     logger.info("  - GET /api/config/options (opções config)")
     logger.info("  - POST /api/search-new-bids (buscar licitações)")
     logger.info("  - POST /api/reevaluate-bids (reavaliar licitações)") 
+
+@system_routes.route('/status/cache', methods=['GET'])
+def cache_status():
+    """
+    Endpoint para verificar o status da conexão com o Redis.
+    Retorna informações sobre o cliente Redis e a memória utilizada.
+    """
+    try:
+        status_info = cache_service.get_info()
+        if status_info.get("status") == "conectado":
+            return jsonify({
+                "status": "success",
+                "message": "Redis está conectado e operacional.",
+                "data": status_info
+            }), 200
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Não foi possível conectar ao Redis.",
+                "data": status_info
+            }), 503  # Service Unavailable
+    except Exception as e:
+        logger.error(f"❌ Erro inesperado ao verificar status do cache: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Erro interno ao verificar o status do cache."
+        }), 500 

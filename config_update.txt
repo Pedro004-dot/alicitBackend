@@ -1,7 +1,0 @@
-# ================================
-# MATCHING THRESHOLDS - UPDATED TO 70%
-# ================================
-SIMILARITY_THRESHOLD_PHASE1=0.70      # Score mínimo para considerar match (AUMENTADO)
-SIMILARITY_THRESHOLD_PHASE2=0.75      # Score para itens detalhados (MAIS RIGOROSO)
-HIGH_SCORE_THRESHOLD=0.70              # Score mínimo para validação LLM
-ENABLE_LLM_VALIDATION=true             # Forçar validação LLM

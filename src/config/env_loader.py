@@ -29,5 +29,9 @@ def load_environment():
     print(f"  - FLASK_DEBUG: {os.getenv('FLASK_DEBUG', 'True')}")
     print(f"  - LOG_LEVEL: {os.getenv('LOG_LEVEL', 'INFO')}")
 
+def get_env_var(key: str, default: str = None):
+    """Obter variável de ambiente com fallback para valor padrão."""
+    return os.getenv(key, default)
+
 if __name__ == "__main__":
     load_environment() 
