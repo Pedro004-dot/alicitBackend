@@ -73,7 +73,9 @@ class LicitacaoService:
         }
 
     def _aplicar_filtros_locais(self, licitacoes: List[Dict], filtros: Dict) -> List[Dict]:
-        """Aplica a sequência de filtros em memória."""
+        """
+        🔄 ATUALIZADO: Aplica a sequência de filtros em memória com sinônimos obrigatórios.
+        """
         resultado = licitacoes
 
         # 1. Filtro de licitações ativas
@@ -84,55 +86,104 @@ class LicitacaoService:
             if lic.get("data_encerramento") and 
                hoje < datetime.fromisoformat(lic["data_encerramento"].replace("Z", "+00:00")).date() <= limite_futuro
         ]
-        logger.info(f"{len(resultado)} licitações ativas encontradas.")
+        logger.info(f"🕐 {len(resultado)} licitações ativas encontradas.")
 
         # 2. Filtro de Modalidade
         modalidades_filtro = filtros.get("modalidades")
         if modalidades_filtro:
             resultado = [lic for lic in resultado if lic.get("modalidade") in modalidades_filtro]
-            logger.info(f"{len(resultado)} licitações após filtro de modalidade.")
+            logger.info(f"📋 {len(resultado)} licitações após filtro de modalidade.")
 
         # 3. Filtro de Estado (UF)
         estados_filtro = filtros.get("estados")
         if estados_filtro:
             resultado = [lic for lic in resultado if lic.get("uf") in estados_filtro]
-            logger.info(f"{len(resultado)} licitações após filtro de estado.")
+            logger.info(f"🗺️ {len(resultado)} licitações após filtro de estado.")
 
         # 4. Filtro de Cidade
         cidades_filtro = filtros.get("cidades")
         if cidades_filtro:
              resultado = [lic for lic in resultado if lic.get("municipio") and any(c.lower() in lic.get("municipio").lower() for c in cidades_filtro)]
-             logger.info(f"{len(resultado)} licitações após filtro de cidade.")
+             logger.info(f"🏙️ {len(resultado)} licitações após filtro de cidade.")
 
-        # 5. Filtro de Palavra-chave com Sinônimos
+        # 5. 🆕 MELHORADO: Filtro de Palavra-chave com Sinônimos SEMPRE APLICADOS
         palavra_chave = filtros.get("palavra_chave")
         if palavra_chave:
+            logger.info(f"🔍 Aplicando filtro de palavra-chave: '{palavra_chave}'")
+            
+            # 🚀 SEMPRE gerar sinônimos (não depender de cache)
             termos_busca = self._gerar_palavras_busca(palavra_chave)
-            logger.info(f"Filtrando com os termos: {termos_busca}")
+            logger.info(f"🎯 Filtrando com os termos: {termos_busca}")
             
-            filtrado_final = []
-            for lic in resultado:
-                texto_busca = (lic.get("titulo", "") + " " + lic.get("descricao", "")).lower()
-                if any(termo.lower() in texto_busca for termo in termos_busca):
-                    filtrado_final.append(lic)
-            resultado = filtrado_final
-            logger.info(f"{len(resultado)} licitações após filtro de palavra-chave.")
-            
+            if termos_busca:
+                filtrado_final = []
+                matches_por_termo = {}
+                
+                for lic in resultado:
+                    texto_busca = (lic.get("titulo", "") + " " + lic.get("descricao", "")).lower()
+                    
+                    # Verificar se algum termo está presente
+                    match_encontrado = False
+                    termo_match = None
+                    
+                    for termo in termos_busca:
+                        if termo.lower() in texto_busca:
+                            match_encontrado = True
+                            termo_match = termo
+                            
+                            # Contabilizar matches por termo para analytics
+                            if termo not in matches_por_termo:
+                                matches_por_termo[termo] = 0
+                            matches_por_termo[termo] += 1
+                            break
+                    
+                    if match_encontrado:
+                        lic['_matched_term'] = termo_match  # Debug info
+                        filtrado_final.append(lic)
+                
+                resultado = filtrado_final
+                
+                # Log detalhado dos matches
+                logger.info(f"🎯 {len(resultado)} licitações após filtro de palavra-chave.")
+                for termo, count in matches_por_termo.items():
+                    is_synonym = termo != palavra_chave.lower()
+                    tipo = "sinônimo" if is_synonym else "termo original"
+                    logger.info(f"   📊 '{termo}' ({tipo}): {count} matches")
+            else:
+                logger.warning("⚠️ Nenhum termo de busca válido gerado")
+                
         return resultado
 
     def _gerar_palavras_busca(self, palavra_chave: str) -> List[str]:
-        """Gera uma lista de termos de busca, incluindo a palavra original e sinônimos."""
-        if not palavra_chave: return []
+        """
+        🔄 ATUALIZADO: Gera uma lista de termos de busca, incluindo a palavra original e sinônimos.
+        """
+        if not palavra_chave: 
+            return []
         
+        # Sempre incluir a palavra original
         termos = [palavra_chave.lower()]
+        
         if self.openai_service:
             try:
-                logger.info(f"Gerando sinônimos para '{palavra_chave}'...")
-                sinonimos = self.openai_service.gerar_sinonimos(palavra_chave)
-                if sinonimos:
-                    termos.extend([s.lower() for s in sinonimos[:4] if s.lower() not in termos])
+                logger.info(f"🔤 Gerando sinônimos para '{palavra_chave}'...")
+                sinonimos = self.openai_service.gerar_sinonimos(palavra_chave, max_sinonimos=5)
+                
+                if sinonimos and len(sinonimos) > 1:
+                    # sinonimos[0] é a palavra original, pegar os demais
+                    sinonimos_novos = [s.lower() for s in sinonimos[1:] if s.lower() not in termos]
+                    termos.extend(sinonimos_novos[:4])  # Limitar a 4 sinônimos extras
+                    
+                    logger.info(f"✅ Sinônimos gerados: {sinonimos_novos}")
+                    logger.info(f"🎯 Termos finais para busca: {termos}")
+                else:
+                    logger.info("ℹ️ Nenhum sinônimo adicional gerado")
+                    
             except Exception as e:
-                logger.warning(f"Erro ao gerar sinônimos: {e}. Usando apenas o termo original.")
+                logger.warning(f"⚠️ Erro ao gerar sinônimos: {e}. Usando apenas o termo original.")
+        else:
+            logger.info("ℹ️ OpenAI Service não disponível - usando apenas termo original")
+            
         return termos
 
     def _remover_duplicatas(self, licitacoes: List[Dict]) -> List[Dict]:

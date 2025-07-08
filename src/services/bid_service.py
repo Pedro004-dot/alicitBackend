@@ -1712,34 +1712,46 @@ class BidService:
     
     def _convert_dict_to_search_filters(self, filters: Dict[str, Any]):
         """
-        Convert dictionary filters to SearchFilters object
-        
-        Args:
-            filters: Dictionary with search criteria
-            
-        Returns:
-            SearchFilters object
+        🔄 ATUALIZADO: Convert dictionary filters to SearchFilters object incluindo sinônimos
         """
         try:
             from interfaces.procurement_data_source import SearchFilters
             
+            # 🆕 NOVO: Processar keywords com sinônimos
+            keywords = filters.get('keywords') or filters.get('search_term')
+            
+            # Se temos OpenAI disponível e keywords, gerar sinônimos
+            if keywords and hasattr(self, 'openai_service') and self.openai_service:
+                try:
+                    # Gerar sinônimos
+                    synonyms_list = self.openai_service.gerar_sinonimos(keywords, max_sinonimos=5)
+                    
+                    # Criar string de busca com OR para incluir sinônimos
+                    if synonyms_list and len(synonyms_list) > 1:
+                        # Formar keywords expandidas: palavra_original OR "sinonimo1" OR "sinonimo2"
+                        expanded_keywords = f'"{keywords}"'
+                        for synonym in synonyms_list[1:]:  # Pular o primeiro que é a palavra original
+                            expanded_keywords += f' OR "{synonym}"'
+                        
+                        logger.info(f"🔤 Keywords expandidas com sinônimos: {expanded_keywords}")
+                        keywords = expanded_keywords
+                    else:
+                        logger.info(f"🔤 Usando keywords original: {keywords}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Erro ao gerar sinônimos para busca unificada: {e}")
+                    # Manter keywords original se houver erro
+            
             # Map common filter names to SearchFilters parameters
             search_filters = SearchFilters(
-                keywords=filters.get('keywords') or filters.get('search_term'),
-                # keywords=filters.get('keywords'),
+                keywords=keywords,
                 region_code=filters.get('region_code') or filters.get('uf'),
                 country_code=filters.get('country_code', 'BR'),
                 min_value=filters.get('min_value'),
                 max_value=filters.get('max_value'),
-                # currency_code=filters.get('currency_code', 'BRL'),
                 publication_date_from=filters.get('publication_date_from'),
                 publication_date_to=filters.get('publication_date_to'),
-                # submission_deadline_from=filters.get('submission_deadline_from'),
-                # submission_deadline_to=filters.get('submission_deadline_to'),
                 page=filters.get('page', 1),
                 page_size=filters.get('page_size', 20),
-                # sort_by=filters.get('sort_by'),
-                # sort_order=filters.get('sort_order')
             )
             
             return search_filters
@@ -1749,19 +1761,10 @@ class BidService:
             # Return default SearchFilters if conversion fails
             from interfaces.procurement_data_source import SearchFilters
             return SearchFilters()
-    
+
     def _format_unified_result_for_frontend(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Format unified search result for frontend consumption
-        
-        This method converts unified search results to a format similar to
-        existing bid formatting to maintain frontend compatibility.
-        
-        Args:
-            result: Dictionary with unified search result
-            
-        Returns:
-            Dictionary formatted for frontend
+        🔄 ATUALIZADO: Format unified search result for frontend consumption
         """
         try:
             # Extract provider information
@@ -1808,6 +1811,10 @@ class BidService:
                 # Provider-specific data
                 'provider_specific_data': result.get('provider_specific_data', {}),
                 
+                # 🆕 NOVO: Indicadores de sinônimos se aplicável
+                'has_synonym_match': result.get('matched_via_synonym', False),
+                'matched_term': result.get('matched_term'),
+                
                 # Compatibility fields
                 'status_calculado': self._calculate_unified_status(result),
                 'valor_display': self._format_unified_value_display(result.get('estimated_value')),
@@ -1825,42 +1832,76 @@ class BidService:
                 'provider_name': result.get('provider_name', 'unknown'),
                 'error': f"Formatting error: {str(e)}"
             }
-    
+
     def _fallback_to_pncp_search(self, filters: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Fallback to traditional PNCP search when unified search is not available
-        
-        Args:
-            filters: Dictionary with search criteria
-            
-        Returns:
-            Tuple of (opportunities_list, message)
+        🔄 ATUALIZADO: Fallback to traditional PNCP search incluindo sinônimos
         """
         try:
-            logger.info("🔄 Falling back to traditional PNCP search")
+            logger.info("🔄 Falling back to traditional PNCP search with synonyms")
             
-            # Use existing search method based on available filters
-            if 'search_term' in filters or 'keywords' in filters:
-                search_term = filters.get('search_term') or filters.get('keywords')
-                limit = filters.get('page_size', 50)
-                results = self.search_bids_by_object(search_term, limit)
-                message = f"PNCP fallback search: {len(results)} results for '{search_term}'"
-            elif 'uf' in filters or 'region_code' in filters:
-                uf = filters.get('uf') or filters.get('region_code')
-                limit = filters.get('page_size', 50)
-                results = self.get_bids_by_state(uf, limit)
-                message = f"PNCP fallback search: {len(results)} results for state {uf}"
-            elif 'min_value' in filters or 'max_value' in filters:
-                min_val = filters.get('min_value', 0)
-                max_val = filters.get('max_value', float('inf'))
-                limit = filters.get('page_size', 50)
-                results = self.get_bids_by_value_range(min_val, max_val, limit)
-                message = f"PNCP fallback search: {len(results)} results for value range"
+            # 🆕 NOVO: Adicionar sinônimos ao termo de busca se disponível
+            search_term = filters.get('search_term') or filters.get('keywords')
+            if search_term and hasattr(self, 'openai_service') and self.openai_service:
+                try:
+                    # Gerar sinônimos para o fallback também
+                    synonyms_list = self.openai_service.gerar_sinonimos(search_term, max_sinonimos=3)
+                    if synonyms_list and len(synonyms_list) > 1:
+                        # Usar todos os termos na busca fallback
+                        expanded_terms = synonyms_list
+                        logger.info(f"🔤 Fallback usando termos expandidos: {expanded_terms}")
+                        
+                        # Para o fallback, vamos usar o primeiro sinônimo se não encontrar com o termo original
+                        results = []
+                        
+                        # Tentar com termo original primeiro
+                        if 'search_term' in filters or 'keywords' in filters:
+                            limit = filters.get('page_size', 50)
+                            results = self.search_bids_by_object(search_term, limit)
+                        
+                        # Se poucos resultados, tentar com sinônimos
+                        if len(results) < 5 and len(synonyms_list) > 1:
+                            for synonym in synonyms_list[1:2]:  # Tentar só o primeiro sinônimo
+                                synonym_results = self.search_bids_by_object(synonym, limit)
+                                if len(synonym_results) > len(results):
+                                    results = synonym_results
+                                    logger.info(f"🎯 Fallback: Melhores resultados com sinônimo '{synonym}'")
+                                    break
+                        
+                        message = f"PNCP fallback search with synonyms: {len(results)} results"
+                        
+                    else:
+                        # Sem sinônimos, usar busca normal
+                        results = self.search_bids_by_object(search_term, filters.get('page_size', 50))
+                        message = f"PNCP fallback search: {len(results)} results for '{search_term}'"
+                        
+                except Exception as e:
+                    logger.error(f"❌ Erro no fallback com sinônimos: {e}")
+                    # Fallback do fallback - busca simples
+                    results = self.search_bids_by_object(search_term, filters.get('page_size', 50))
+                    message = f"PNCP simple fallback: {len(results)} results"
             else:
-                # Default to recent bids
-                limit = filters.get('page_size', 20)
-                results, message = self.get_recent_bids(limit)
-                message = f"PNCP fallback search: {message}"
+                # Use existing search method based on available filters
+                if 'search_term' in filters or 'keywords' in filters:
+                    limit = filters.get('page_size', 50)
+                    results = self.search_bids_by_object(search_term, limit)
+                    message = f"PNCP fallback search: {len(results)} results for '{search_term}'"
+                elif 'uf' in filters or 'region_code' in filters:
+                    uf = filters.get('uf') or filters.get('region_code')
+                    limit = filters.get('page_size', 50)
+                    results = self.get_bids_by_state(uf, limit)
+                    message = f"PNCP fallback search: {len(results)} results for state {uf}"
+                elif 'min_value' in filters or 'max_value' in filters:
+                    min_val = filters.get('min_value', 0)
+                    max_val = filters.get('max_value', float('inf'))
+                    limit = filters.get('page_size', 50)
+                    results = self.get_bids_by_value_range(min_val, max_val, limit)
+                    message = f"PNCP fallback search: {len(results)} results for value range"
+                else:
+                    # Default to recent bids
+                    limit = filters.get('page_size', 20)
+                    results, message = self.get_recent_bids(limit)
+                    message = f"PNCP fallback search: {message}"
             
             # Add provider information to results for consistency
             for result in results:

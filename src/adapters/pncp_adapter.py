@@ -5,10 +5,18 @@ import json
 import hashlib
 import aiohttp
 import asyncio
+import os
+import redis
 
 from interfaces.procurement_data_source import ProcurementDataSource, SearchFilters, OpportunityData
 from repositories.licitacao_pncp_repository import LicitacaoPNCPRepository
 from matching.pncp_api import fetch_bids_from_pncp, fetch_bid_items_from_pncp
+
+# 🆕 NOVO: Import do OpenAI Service para sinônimos
+try:
+    from services.openai_service import OpenAIService
+except ImportError:
+    OpenAIService = None
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +68,22 @@ class PNCPAdapter(ProcurementDataSource):
         logger.info(f"✅ PNCP Adapter initialized - will fetch up to {self.max_results} results via {self.max_pages} pages with 24h cache")
         logger.info(f"📅 Date range: {self.data_inicial} to {self.data_final} (formato YYYYMMDD)")
         logger.info(f"🔗 API Base URL: {self.api_base_url}")
+        
+        # 🆕 NOVO: Inicializar OpenAI Service para sinônimos
+        self.openai_service = None
+        if OpenAIService:
+            try:
+                self.openai_service = OpenAIService()
+                logger.info("✅ OpenAI Service inicializado para geração de sinônimos")
+            except Exception as e:
+                logger.warning(f"⚠️ Não foi possível inicializar OpenAI Service: {e}")
+        
+        # Setup Redis
+        self.redis_client = None
+        self.cache_ttl = 3600  # 1 hora
+        self.redis_available = self._setup_redis()
+        
+        logger.info(f"🔗 PNCPAdapter inicializado - Redis: {'Ativo' if self.redis_available else 'Inativo'}")
 
     def _setup_redis(self) -> bool:
         """Set up Redis connection"""
@@ -74,10 +98,58 @@ class PNCPAdapter(ProcurementDataSource):
 
     def _generate_cache_key(self, base_key: str, params: Dict[str, Any]) -> str:
         """Generate a consistent cache key from search parameters"""
-        # Sort parameters for consistent key generation
-        sorted_params = json.dumps(params, sort_keys=True, default=str)
-        params_hash = hashlib.md5(sorted_params.encode()).hexdigest()[:8]
-        return f"{base_key}:{params_hash}"
+        # 🆕 NOVO: Incluir sinônimos na chave se existirem
+        cache_params = params.copy()
+        
+        # Se há keywords, gerar sinônimos e incluir na chave
+        keywords = params.get('keywords')
+        if keywords and self.openai_service:
+            try:
+                synonyms = self._generate_synonyms_for_cache(keywords)
+                if synonyms:
+                    # Adicionar sinônimos ordenados à chave para consistência
+                    cache_params['synonyms'] = sorted(synonyms)
+                    logger.debug(f"🔤 Sinônimos incluídos na chave de cache: {synonyms}")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao gerar sinônimos para cache: {e}")
+        
+        # Ordenar parâmetros para chave consistente
+        sorted_params = json.dumps(cache_params, sort_keys=True, ensure_ascii=False)
+        cache_key = f"pncp:v2:{base_key}:{hash(sorted_params)}"
+        return cache_key
+
+    def _generate_synonyms_for_cache(self, keywords: str) -> List[str]:
+        """
+        🆕 NOVO: Gerar sinônimos especificamente para cache (com fallback rápido)
+        """
+        if not keywords or not self.openai_service:
+            return []
+        
+        try:
+            # Usar cache local simples para sinônimos por sessão
+            if not hasattr(self, '_synonyms_cache'):
+                self._synonyms_cache = {}
+            
+            # Verificar se já temos sinônimos para esta palavra
+            keywords_key = keywords.lower().strip()
+            if keywords_key in self._synonyms_cache:
+                return self._synonyms_cache[keywords_key]
+            
+            # Gerar sinônimos
+            synonyms = self.openai_service.gerar_sinonimos(keywords, max_sinonimos=5)
+            
+            # Remover a palavra original dos sinônimos para evitar duplicação
+            synonyms_only = [s for s in synonyms if s.lower() != keywords_key]
+            
+            # Cache local
+            self._synonyms_cache[keywords_key] = synonyms_only
+            
+            logger.info(f"🔤 Sinônimos gerados para '{keywords}': {synonyms_only}")
+            return synonyms_only
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao gerar sinônimos: {e}")
+            return []
 
     def _clear_old_cache(self) -> None:
         """Clear old cache entries to prevent stale data"""
@@ -774,42 +846,58 @@ class PNCPAdapter(ProcurementDataSource):
     
     def _apply_local_filters(self, data: List[Dict[str, Any]], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Aplica filtros locais nos dados do cache para máxima performance
-        
-        Filtros aplicados:
-        - keywords: busca em objetoCompra e informacaoComplementar
-        - region_code: filtra por UF (unidadeOrgao.ufSigla)
-        - municipality: filtra por cidade (unidadeOrgao.municipioNome)
-        - min_value/max_value: filtra por valorTotalEstimado
-        - procurement_type: filtra por modalidadeId
+        🔄 ATUALIZADO: Aplica filtros locais incluindo sinônimos SEMPRE
         """
         filtered_data = data[:]  # Start with all data
         initial_count = len(filtered_data)
         
-        logger.info(f"🔍 APLICANDO FILTROS LOCAIS: {initial_count} registros iniciais")
+        logger.info(f"🔍 APLICANDO FILTROS LOCAIS COM SINÔNIMOS: {initial_count} registros iniciais")
         logger.info(f"   📋 Filtros recebidos: {filters}")
         
-        # 🔍 FILTRO DE PALAVRAS-CHAVE - CORREÇÃO CRÍTICA
+        # 🔍 FILTRO DE PALAVRAS-CHAVE COM SINÔNIMOS - SEMPRE APLICADO
         keywords = filters.get('keywords')
         if keywords and keywords.strip():
-            logger.info(f"   🔤 Aplicando filtro de keywords: '{keywords}'")
+            logger.info(f"   🔤 Aplicando filtro de keywords com sinônimos: '{keywords}'")
             
-            # CORREÇÃO: Tratar keywords que podem vir com OR ou aspas
+            # 🆕 NOVO: Sempre gerar e incluir sinônimos
+            all_search_terms = [keywords.strip()]
+            
+            # Gerar sinônimos se disponível
+            if self.openai_service:
+                try:
+                    synonyms = self._generate_synonyms_for_cache(keywords)
+                    if synonyms:
+                        all_search_terms.extend(synonyms)
+                        logger.info(f"   🎯 Usando sinônimos: {synonyms}")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ Erro ao gerar sinônimos: {e}")
+            
+            # Processar keywords que podem vir com OR ou aspas (manter compatibilidade)
             if ' OR ' in keywords:
-                # Se tem OR, extrair os termos entre aspas
                 import re
                 keyword_terms = re.findall(r'"([^"]*)"', keywords)
                 if not keyword_terms:
-                    # Fallback: split por OR se não tiver aspas
                     keyword_terms = [term.strip().strip('"') for term in keywords.split(' OR ') if term.strip()]
+                # Adicionar sinônimos para cada termo individual se necessário
+                final_terms = keyword_terms[:]
+                for term in keyword_terms:
+                    if self.openai_service and term not in all_search_terms:
+                        try:
+                            term_synonyms = self._generate_synonyms_for_cache(term)
+                            final_terms.extend(term_synonyms)
+                        except:
+                            pass
+                all_search_terms = list(set(final_terms))  # Remove duplicates
             else:
-                # Busca simples - normalizar e dividir por espaços
+                # Normalizar e dividir por espaços + adicionar sinônimos
                 clean_keywords = self._normalizar_simples(keywords)
-                keyword_terms = [term.strip() for term in clean_keywords.split() if term.strip()]
+                basic_terms = [term.strip() for term in clean_keywords.split() if term.strip()]
+                all_search_terms.extend(basic_terms)
+                all_search_terms = list(set(all_search_terms))  # Remove duplicates
             
-            logger.info(f"   🎯 Termos de busca extraídos: {keyword_terms}")
+            logger.info(f"   🎯 Termos finais de busca (incluindo sinônimos): {all_search_terms}")
             
-            if keyword_terms:
+            if all_search_terms:
                 keyword_filtered = []
                 matches_found = 0
                 
@@ -828,12 +916,16 @@ class PNCPAdapter(ProcurementDataSource):
                     # Aplicar mesma normalização
                     texto_normalizado = self._normalizar_simples(texto_completo)
                     
-                    # CORREÇÃO: Verificar se QUALQUER termo da busca está presente
+                    # 🔄 CORREÇÃO: Verificar se QUALQUER termo da busca (incluindo sinônimos) está presente
                     match_found = False
-                    for term in keyword_terms:
+                    matched_term = None
+                    for term in all_search_terms:
+                        if not term:
+                            continue
                         term_normalizado = self._normalizar_simples(term)
                         if term_normalizado and term_normalizado in texto_normalizado:
                             match_found = True
+                            matched_term = term
                             break
                     
                     if match_found:
@@ -842,116 +934,78 @@ class PNCPAdapter(ProcurementDataSource):
                         
                         # Log dos primeiros 3 matches para debug
                         if matches_found <= 3:
-                            logger.info(f"      ✅ Match #{matches_found}: {objeto_compra[:100]}...")
+                            logger.info(f"      ✅ Match #{matches_found} (termo: '{matched_term}'): {objeto_compra[:100]}...")
                 
                 filtered_data = keyword_filtered
-                logger.info(f"   🔤 Filtro keywords: {len(filtered_data)} matches de {initial_count} (termos: {keyword_terms})")
+                logger.info(f"   🔤 Filtro keywords COM sinônimos: {len(filtered_data)} matches de {initial_count}")
             else:
-                logger.warning(f"   ⚠️ Nenhum termo válido extraído de keywords: '{keywords}'")
-        else:
-            logger.info(f"   ➡️ Sem filtro de keywords (keywords='{keywords}')")
-        
-        # 📍 FILTRO DE UF
+                logger.warning("   ⚠️ Nenhum termo válido para busca")
+
+        # 🔍 FILTRO DE REGIÃO
         region_code = filters.get('region_code')
-        if region_code and region_code != 'ALL':
-            logger.info(f"   🗺️ Aplicando filtro de UF: '{region_code}'")
+        if region_code:
+            logger.info(f"   🗺️ Aplicando filtro de região: {region_code}")
             region_filtered = []
             for item in filtered_data:
-                unidade_orgao = item.get('unidadeOrgao', {})
-                bid_uf = unidade_orgao.get('ufSigla')
-                if bid_uf == region_code:
+                item_uf = item.get('unidadeOrgao', {}).get('ufSigla', '').upper()
+                if item_uf == region_code.upper():
                     region_filtered.append(item)
             
             filtered_data = region_filtered
-            logger.info(f"   🗺️ Filtro UF: {len(filtered_data)} matches para '{region_code}'")
-        else:
-            logger.info(f"   ➡️ Sem filtro de UF (region_code='{region_code}')")
-        
-        # 🏙️ FILTRO DE CIDADE
+            logger.info(f"   🗺️ Filtro região: {len(filtered_data)} restantes")
+
+        # 🔍 FILTRO DE MUNICÍPIO
         municipality = filters.get('municipality')
-        if municipality and municipality.strip():
-            logger.info(f"   🏙️ Aplicando filtro de cidade: '{municipality}'")
-            city_filtered = []
-            municipality_lower = municipality.lower()
-            for item in filtered_data:
-                unidade_orgao = item.get('unidadeOrgao', {})
-                bid_city = (unidade_orgao.get('municipioNome') or '').lower()
-                if municipality_lower in bid_city:
-                    city_filtered.append(item)
+        if municipality:
+            logger.info(f"   🏙️ Aplicando filtro de município: {municipality}")
+            municipality_filtered = []
+            municipality_normalized = self._normalizar_simples(municipality)
             
-            filtered_data = city_filtered
-            logger.info(f"   🏙️ Filtro cidade: {len(filtered_data)} matches para '{municipality}'")
-        else:
-            logger.info(f"   ➡️ Sem filtro de cidade")
-        
-        # 💰 FILTRO DE VALOR MÍNIMO
+            for item in filtered_data:
+                item_municipio = item.get('unidadeOrgao', {}).get('municipioNome', '')
+                item_municipio_normalized = self._normalizar_simples(item_municipio)
+                
+                if municipality_normalized in item_municipio_normalized:
+                    municipality_filtered.append(item)
+            
+            filtered_data = municipality_filtered
+            logger.info(f"   🏙️ Filtro município: {len(filtered_data)} restantes")
+
+        # 🔍 FILTRO DE VALOR MÍNIMO
         min_value = filters.get('min_value')
         if min_value is not None:
-            logger.info(f"   💰 Aplicando filtro valor mínimo: R$ {min_value}")
+            logger.info(f"   💰 Aplicando filtro valor mínimo: R$ {min_value:,.2f}")
             value_filtered = []
             for item in filtered_data:
                 item_value = item.get('valorTotalEstimado')
-                if item_value is not None and float(item_value) >= float(min_value):
-                    value_filtered.append(item)
+                if item_value is not None:
+                    try:
+                        if float(item_value) >= float(min_value):
+                            value_filtered.append(item)
+                    except (ValueError, TypeError):
+                        continue
             
             filtered_data = value_filtered
-            logger.info(f"   💰 Filtro valor min: {len(filtered_data)} matches >= R$ {min_value}")
-        else:
-            logger.info(f"   ➡️ Sem filtro de valor mínimo")
-        
-        # 💰 FILTRO DE VALOR MÁXIMO
+            logger.info(f"   💰 Filtro valor mínimo: {len(filtered_data)} restantes")
+
+        # 🔍 FILTRO DE VALOR MÁXIMO
         max_value = filters.get('max_value')
         if max_value is not None:
-            logger.info(f"   💰 Aplicando filtro valor máximo: R$ {max_value}")
+            logger.info(f"   💰 Aplicando filtro valor máximo: R$ {max_value:,.2f}")
             value_filtered = []
             for item in filtered_data:
                 item_value = item.get('valorTotalEstimado')
-                if item_value is not None and float(item_value) <= float(max_value):
-                    value_filtered.append(item)
+                if item_value is not None:
+                    try:
+                        if float(item_value) <= float(max_value):
+                            value_filtered.append(item)
+                    except (ValueError, TypeError):
+                        continue
             
             filtered_data = value_filtered
-            logger.info(f"   💰 Filtro valor max: {len(filtered_data)} matches <= R$ {max_value}")
-        else:
-            logger.info(f"   ➡️ Sem filtro de valor máximo")
-        
-        # 📋 FILTRO DE MODALIDADE
-        procurement_type = filters.get('procurement_type')
-        if procurement_type:
-            logger.info(f"   📋 Aplicando filtro de modalidade: '{procurement_type}'")
-            # Mapear tipos de modalidade para IDs do PNCP
-            modalidade_map = {
-                'pregao_eletronico': [8],
-                'concorrencia': [5],
-                'dispensa': [1],
-                'tomada_precos': [7],
-                'convite': [6],
-                'inexigibilidade': [2]
-            }
-            
-            allowed_modalidades = []
-            if isinstance(procurement_type, list):
-                for pt in procurement_type:
-                    if pt in modalidade_map:
-                        allowed_modalidades.extend(modalidade_map[pt])
-            elif procurement_type in modalidade_map:
-                allowed_modalidades = modalidade_map[procurement_type]
-            
-            if allowed_modalidades:
-                modalidade_filtered = []
-                for item in filtered_data:
-                    item_modalidade = item.get('modalidadeId')
-                    if item_modalidade in allowed_modalidades:
-                        modalidade_filtered.append(item)
-                
-                filtered_data = modalidade_filtered
-                logger.info(f"   📋 Filtro modalidade: {len(filtered_data)} matches para '{procurement_type}' (IDs: {allowed_modalidades})")
-            else:
-                logger.warning(f"   ⚠️ Modalidade '{procurement_type}' não mapeada")
-        else:
-            logger.info(f"   ➡️ Sem filtro de modalidade")
-        
-        final_count = len(filtered_data)
-        logger.info(f"✅ FILTROS APLICADOS: {final_count} registros finais de {initial_count} iniciais")
+            logger.info(f"   💰 Filtro valor máximo: {len(filtered_data)} restantes")
+
+        logger.info(f"🎯 FILTROS LOCAIS CONCLUÍDOS: {len(filtered_data)} registros finais de {initial_count} iniciais")
         
         return filtered_data
     
