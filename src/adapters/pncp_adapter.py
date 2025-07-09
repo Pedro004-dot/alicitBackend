@@ -343,11 +343,12 @@ class PNCPAdapter(ProcurementDataSource):
         seen_pncp_ids = set()
         total_pages_searched = 0
         max_pages = 200  # Same as working repository
-        batch_size = 20  # Process 20 pages in parallel (same as working repo)
+        batch_size = 20  # Process 20 pages in parallel (same as working repo)ene
         
         # 🔄 PARALLEL BATCH PROCESSING (like working repository)
         logger.info(f"🚀 Executing {max_pages} API calls in parallel batches...")
-        
+        # 🔄 PARALLEL BATCH PROCESSING (like working repository)
+       
         start_time = time.time()
         empty_batches_count = 0
         max_empty_batches = 5
