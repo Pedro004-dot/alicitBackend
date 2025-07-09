@@ -34,17 +34,19 @@ class UnifiedSearchService:
         """Initialize the unified search service with singleton factory"""
         
         # Use singleton pattern for factory to avoid multiple Redis connections
-        if UnifiedSearchService._factory_instance is None or config is not None:
-            self.config = config or DataSourceConfig()
-            UnifiedSearchService._config_instance = self.config
-            UnifiedSearchService._factory_instance = DataSourceFactory(self.config)
+        if UnifiedSearchService._factory_instance is None:
+            # 🔧 CORREÇÃO: DataSourceFactory é Singleton, não aceita argumentos no construtor
+            from factories.data_source_factory import get_data_source_factory
+            UnifiedSearchService._factory_instance = get_data_source_factory()
             logger.info("✅ UnifiedSearchService initialized with NEW DataSourceFactory")
         else:
-            # Reuse existing factory
-            self.config = UnifiedSearchService._config_instance
             logger.info("✅ UnifiedSearchService initialized with EXISTING DataSourceFactory (singleton)")
     
         self.factory = UnifiedSearchService._factory_instance
+        
+        # Manter config para compatibilidade (não mais usada pelo factory)
+        self.config = config or DataSourceConfig()
+        UnifiedSearchService._config_instance = self.config
         
         logger.info("✅ UnifiedSearchService initialized with synonym expansion")
     
@@ -67,17 +69,21 @@ class UnifiedSearchService:
             # Expand keywords with synonyms before searching
             enhanced_filters = self._enhance_filters_with_synonyms(filters)
             
-            # Get all active provider instances
-            providers = self.factory.create_all_active()
+            # 🔧 CORREÇÃO: Usar métodos disponíveis na nova DataSourceFactory
+            available_providers = self.factory.list_available_providers()
             
-            if not providers:
-                logger.warning("No active providers found")
+            if not available_providers:
+                logger.warning("No available providers found")
                 return {}
             
             results = {}
             
             # Search each provider
-            for provider_name, provider in providers.items():
+            for provider_name in available_providers:
+                provider = self.factory.get_data_source(provider_name)
+                if not provider:
+                    logger.warning(f"❌ Provider {provider_name} not available")
+                    continue
                 try:
                     logger.info(f"🔍 Searching {provider_name} provider")
                     
@@ -135,10 +141,29 @@ class UnifiedSearchService:
                     combined_results.append(opportunity_dict)
             
             # Sort by publication date (newest first) and estimated value (highest first)
-            combined_results.sort(key=lambda x: (
-                x.get('publication_date', ''),
-                x.get('estimated_value', 0)
-            ), reverse=True)
+            def _sort_key(item):
+                """Return a tuple (publication_date: datetime, estimated_value: float) for sorting."""
+                raw_date = item.get('publication_date')
+                # Ensure publication_date is a datetime for proper comparison
+                if isinstance(raw_date, datetime):
+                    parsed_date = raw_date
+                elif isinstance(raw_date, str) and raw_date:
+                    try:
+                        # ISO-8601 dates are expected from adapters
+                        parsed_date = datetime.fromisoformat(raw_date)
+                    except ValueError:
+                        parsed_date = datetime.min
+                else:
+                    parsed_date = datetime.min
+                # Ensure estimated_value is numeric
+                estimated_value = item.get('estimated_value', 0) or 0
+                try:
+                    estimated_value = float(estimated_value)
+                except (TypeError, ValueError):
+                    estimated_value = 0
+                return (parsed_date, estimated_value)
+
+            combined_results.sort(key=_sort_key, reverse=True)
             
             logger.info(f"✅ Combined search completed: {len(combined_results)} total opportunities")
             
@@ -211,19 +236,24 @@ class UnifiedSearchService:
         try:
             logger.info("📊 Getting provider statistics")
             
-            # Get available and active providers
-            available_providers = self.factory.get_available_providers()
-            active_providers = self.factory.get_active_providers()
+            # 🔧 CORREÇÃO: Usar métodos disponíveis na nova DataSourceFactory
+            available_providers = self.factory.list_available_providers()
+            cached_providers = self.factory.get_cached_providers()
             
-            # Get provider information and validation results
-            provider_info = self.factory.get_provider_info()
-            validation_results = self.factory.validate_all_providers()
+            # Simular validation results testando conectividade
+            validation_results = {}
+            for provider_name in available_providers:
+                try:
+                    provider = self.factory.get_data_source(provider_name)
+                    validation_results[provider_name] = provider is not None
+                except Exception:
+                    validation_results[provider_name] = False
             
             # Build comprehensive stats
             stats = {
                 'summary': {
                     'total_providers': len(available_providers),
-                    'active_providers': len(active_providers),
+                    'cached_providers': len(cached_providers),
                     'connected_providers': sum(1 for connected in validation_results.values() if connected),
                     'last_updated': datetime.now().isoformat()
                 },
@@ -232,16 +262,15 @@ class UnifiedSearchService:
             
             # Add detailed information for each provider
             for provider_name in available_providers:
-                provider_data = provider_info.get(provider_name, {})
                 is_connected = validation_results.get(provider_name, False)
+                is_cached = provider_name in cached_providers
                 
                 stats['providers'][provider_name] = {
                     'name': provider_name,
-                    'enabled': provider_data.get('enabled', False),
+                    'supported': self.factory.is_provider_supported(provider_name),
+                    'cached': is_cached,
                     'connected': is_connected,
                     'status': 'healthy' if is_connected else 'disconnected',
-                    'config': provider_data.get('config', {}),
-                    'metadata': provider_data.get('metadata', {}),
                     'last_validated': datetime.now().isoformat()
                 }
             
@@ -278,8 +307,8 @@ class UnifiedSearchService:
             # Expand keywords with synonyms before searching
             enhanced_filters = self._enhance_filters_with_synonyms(filters)
             
-            # Create provider instance
-            provider = self.factory.create(provider_name)
+            # 🔧 CORREÇÃO: Usar get_data_source ao invés de create
+            provider = self.factory.get_data_source(provider_name)
             
             # Search opportunities
             opportunities = await provider.search_opportunities(enhanced_filters)
@@ -305,8 +334,8 @@ class UnifiedSearchService:
         try:
             logger.info(f"🔍 Validating {provider_name} connection")
             
-            # Create provider instance
-            provider = self.factory.create(provider_name)
+            # 🔧 CORREÇÃO: Usar get_data_source ao invés de create
+            provider = self.factory.get_data_source(provider_name)
             
             # Validate connection
             is_connected = await provider.validate_connection()
@@ -333,8 +362,8 @@ class UnifiedSearchService:
         try:
             logger.info(f"🔍 Getting opportunity details: {provider_name}/{external_id}")
             
-            # Create provider instance
-            provider = self.factory.create(provider_name)
+            # 🔧 CORREÇÃO: Usar get_data_source ao invés de create
+            provider = self.factory.get_data_source(provider_name)
             
             # Get opportunity details
             opportunity = await provider.get_opportunity_details(external_id)
@@ -387,8 +416,12 @@ class UnifiedSearchService:
             Dictionary with provider metadata
         """
         try:
-            provider = self.factory.create(provider_name)
-            return provider.get_provider_metadata()
+            # 🔧 CORREÇÃO: Usar get_data_source ao invés de create
+            provider = self.factory.get_data_source(provider_name)
+            if provider and hasattr(provider, 'get_provider_metadata'):
+                return provider.get_provider_metadata()
+            else:
+                return {'name': provider_name, 'available': provider is not None}
         except Exception as e:
             logger.warning(f"Could not get metadata for {provider_name}: {e}")
             return {'name': provider_name, 'error': str(e)}

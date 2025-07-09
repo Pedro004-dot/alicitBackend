@@ -57,8 +57,17 @@ class OpportunityData:
     municipality: Optional[str] = None
     publication_date: Optional[str] = None
     submission_deadline: Optional[str] = None
+    opening_date: Optional[str] = None
+    category: Optional[str] = None
+    status: Optional[str] = None
+    source_url: Optional[str] = None
+    provider_name: Optional[str] = None
+    contact_info: Optional[Dict[str, Any]] = None
+    documents: Optional[List[Dict[str, Any]]] = None
+    additional_info: Optional[Dict[str, Any]] = None
     procuring_entity_id: Optional[str] = None
     procuring_entity_name: Optional[str] = None
+    contracting_authority: Optional[str] = None
     provider_specific_data: Optional[Dict[str, Any]] = None
 
 

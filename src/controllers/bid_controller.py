@@ -965,3 +965,114 @@ class BidController:
                 'error': str(e),
                 'message': 'Erro ao testar conectividade'
             }), 500 
+
+    @log_endpoint_access
+    def get_bid_items_by_pncp_id(self, pncp_id: str) -> Tuple[Dict[str, Any], int]:
+        """GET /api/bids/<pncp_id>/items - Legacy endpoint (DEPRECATED)"""
+        try:
+            logger.info(f"🔍 [DEPRECATED] Buscando itens da licitação PNCP (legacy): {pncp_id}")
+            
+            result = self.bid_service.get_bid_items(pncp_id)
+            
+            if not result.get('success'):
+                return jsonify(result), 404
+            
+            return jsonify(result), 200
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar itens da licitação (legacy): {e}", exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': str(e),
+                'message': 'Erro ao buscar itens da licitação'
+            }), 500
+
+    @log_endpoint_access
+    def get_bid_items_by_provider(self, provider: str, external_id: str) -> Tuple[Dict[str, Any], int]:
+        """GET /api/bids/<provider>/<external_id>/items - Buscar itens por provider específico"""
+        try:
+            logger.info(f"🔍 Buscando itens da licitação: Provider={provider}, ID={external_id}")
+            
+            # Validar provider suportado
+            supported_providers = ['pncp', 'comprasnet']
+            if provider.lower() not in supported_providers:
+                return jsonify({
+                    'success': False,
+                    'error': 'Provider não suportado',
+                    'supported_providers': supported_providers,
+                    'message': f'Provider "{provider}" não é suportado. Use: {", ".join(supported_providers)}'
+                }), 400
+            
+            # Chamar método específico baseado no provider
+            if provider.lower() == 'pncp':
+                # Para PNCP, usar o método existente
+                result = self.bid_service.get_bid_items(external_id)
+            elif provider.lower() == 'comprasnet':
+                # Para ComprasNet, usar adapter específico
+                result = self._get_comprasnet_items(external_id)
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Provider não implementado',
+                    'message': f'Suporte para provider "{provider}" ainda não implementado'
+                }), 501
+            
+            if not result.get('success'):
+                return jsonify(result), 404
+            
+            return jsonify(result), 200
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar itens por provider {provider}: {e}", exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': str(e),
+                'message': f'Erro ao buscar itens do provider {provider}'
+            }), 500
+
+    def _get_comprasnet_items(self, external_id: str) -> Dict[str, Any]:
+        """
+        🔍 BUSCAR ITENS DO COMPRASNET usando adapter específico
+        Método interno para buscar itens de licitações do ComprasNet
+        """
+        try:
+            logger.info(f"🔍 Iniciando busca de itens ComprasNet para: {external_id}")
+            
+            # Importar e usar o ComprasNetAdapter diretamente
+            from src.adapters.comprasnet_adapter import ComprasNetAdapter
+            adapter = ComprasNetAdapter()
+            
+            # Buscar itens usando o adapter
+            items = adapter.get_opportunity_items(external_id)
+            
+            if not items:
+                logger.warning(f"⚠️ Nenhum item encontrado para {external_id}")
+                return {
+                    'success': False,
+                    'message': f'Nenhum item encontrado para a licitação {external_id}',
+                    'items': [],
+                    'provider': 'comprasnet'
+                }
+            
+            # Formatar resultado similar ao serviço PNCP
+            result = {
+                'success': True,
+                'items': items,
+                'total_items': len(items),
+                'external_id': external_id,
+                'provider': 'comprasnet',
+                'message': f'{len(items)} itens encontrados'
+            }
+            
+            logger.info(f"✅ ComprasNet: {len(items)} itens encontrados para {external_id}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao buscar itens ComprasNet: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'message': f'Erro ao buscar itens do ComprasNet para {external_id}',
+                'items': [],
+                'provider': 'comprasnet'
+            } 

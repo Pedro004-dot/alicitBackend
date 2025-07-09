@@ -395,21 +395,40 @@ def get_bid_by_pncp_id(pncp_id):
 @bid_routes.route('/<pncp_id>/items', methods=['GET'])
 def get_bid_items_by_pncp_id(pncp_id):
     """
-    GET /api/bids/<pncp_id>/items - Obter itens de licitação específica
+    GET /api/bids/<pncp_id>/items - Buscar itens por PNCP ID (DEPRECIADO - usar /items?pncp_id= no lugar)
     
     DESCRIÇÃO:
-    - Lista itens usando PNCP ID como parâmetro de rota
-    - Alternativa à rota /items para casos específicos
-    - Usado para integrações diretas com o PNCP
+    - Legacy: Buscar itens de licitação específica usando path parameter
+    - AVISO: Esta rota está deprecated, use /api/bids/items?pncp_id= no lugar
+    - Mantida para compatibilidade com versões antigas do frontend
     
     PARÂMETROS:
     - pncp_id: ID único da licitação no PNCP
     
     RETORNA:
-    - Array de itens da licitação
-    - Mesmo formato da rota /items
+    - Array de itens com detalhes completos
     """
-    return controller.get_bid_items(pncp_id)
+    return controller.get_bid_items_by_pncp_id(pncp_id)
+
+@bid_routes.route('/<provider>/<external_id>/items', methods=['GET'])
+def get_bid_items_by_provider(provider, external_id):
+    """
+    GET /api/bids/<provider>/<external_id>/items - Buscar itens por provider e ID externo
+    
+    DESCRIÇÃO:
+    - Busca itens de licitação para qualquer provider (PNCP, ComprasNet, etc)
+    - Suporta diferentes sources de dados de licitação
+    - Usado pelo frontend para buscar itens de diferentes provedores
+    
+    PARÂMETROS:
+    - provider: Nome do provedor (pncp, comprasnet)
+    - external_id: ID externo da licitação no provedor específico
+    
+    RETORNA:
+    - Array de itens com detalhes completos
+    - Erro 404 se provider não suportado ou licitação não encontrada
+    """
+    return controller.get_bid_items_by_provider(provider, external_id)
 
 @bid_routes.route('/detailed', methods=['GET'])
 def get_detailed_bids():

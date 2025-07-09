@@ -115,6 +115,13 @@ def _initialize_database(app: Flask) -> None:
         else:
             app.logger.warning("⚠️ DatabaseManager com problemas de conectividade")
             app.logger.warning(f"❌ Status: {health_status['connections']['postgresql'].get('error', 'Erro desconhecido')}")
+        
+        # 🏗️ NOVO: Inicializar DataMappers escaláveis
+        try:
+            import adapters.mappers
+            app.logger.info("✅ DataMappers inicializados para arquitetura escalável")
+        except Exception as e:
+            app.logger.warning(f"⚠️ Erro ao inicializar DataMappers: {e}")
             
         # Configurar encerramento gracioso do pool
         import atexit
@@ -240,6 +247,7 @@ def _register_blueprints(app: Flask) -> None:
         from routes.quality_match_routes import quality_match_routes # 🎯 QUALITY MATCHING
         from routes.debug_routes import debug_bp # 🐞 DEBUG E ANÁLISE DE DADOS
         from routes.unified_search_routes import unified_search_bp # 🔍 PHASE 3 - UNIFIED SEARCH
+        from routes.test_persistence_routes import create_test_persistence_routes # 🏗️ TESTE SISTEMA ESCALÁVEL
   
         # Registrar blueprints
         app.register_blueprint(auth_routes)  # ✅ Autenticação primeiro
@@ -250,6 +258,14 @@ def _register_blueprints(app: Flask) -> None:
         app.register_blueprint(licitacao_routes)  # ✅ NOVA BUSCA DE LICITAÇÕES
         app.register_blueprint(unified_search_bp)  # 🔍 PHASE 3 - UNIFIED SEARCH
         app.register_blueprint(debug_bp)  # 🐞 DEBUG E ANÁLISE DE DADOS
+        
+        # 🏗️ NOVO: Registrar rotas de teste da arquitetura escalável
+        test_persistence_bp = create_test_persistence_routes()
+        if test_persistence_bp:
+            app.register_blueprint(test_persistence_bp)
+            app.logger.info("  🏗️ Test Persistence: 5 endpoints (/api/test/persistence/*)")
+        else:
+            app.logger.warning("  ❌ Test Persistence: rotas desativadas")
     
         app.register_blueprint(system_routes)
         

@@ -18,6 +18,14 @@ try:
 except ImportError:
     OpenAIService = None
 
+# 🏗️ NOVO: Import do PersistenceService escalável
+try:
+    from services.persistence_service import get_persistence_service
+    # Garantir que os mappers estão registrados
+    import adapters.mappers
+except ImportError:
+    get_persistence_service = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -270,6 +278,10 @@ class PNCPAdapter(ProcurementDataSource):
             if opportunity:
                 opportunities.append(opportunity)
         
+        # 🚫 SALVAMENTO AUTOMÁTICO DESATIVADO - Performance otimizada
+        # Agora só salva quando usuário acessa licitação específica via modal
+        logger.info(f"🚫 Salvamento automático desativado - dados retornados sem persistir")
+        
         logger.info(f"✅ PNCP search completed: {len(opportunities)} opportunities")
         return opportunities
 
@@ -338,7 +350,7 @@ class PNCPAdapter(ProcurementDataSource):
         
         start_time = time.time()
         empty_batches_count = 0
-        max_empty_batches = 3
+        max_empty_batches = 5
         
         for batch_start in range(1, max_pages + 1, batch_size):
             batch_end = min(batch_start + batch_size - 1, max_pages)
@@ -1124,7 +1136,8 @@ class PNCPAdapter(ProcurementDataSource):
             situacao_nome = licitacao.get('situacaoCompraNome', '')
             status = self._determine_status(licitacao)
             
-            return OpportunityData(
+            # 🔧 CORRIGIDO: Criar OpportunityData temporário primeiro
+            opportunity_data = OpportunityData(
                 external_id=numero_controle,
                 title=titulo,
                 description=descricao,
@@ -1165,10 +1178,17 @@ class PNCPAdapter(ProcurementDataSource):
                 }
             )
             
+            # 🔧 CORREÇÃO CRÍTICA: Adicionar provider_name dinamicamente (PersistenceService precisa dele)
+            # Como OpportunityData não tem provider_name na definição, precisamos adicioná-lo dinamicamente
+            opportunity_data.provider_name = self.get_provider_name()
+            opportunity_data.contracting_authority = orgao_nome
+            
+            return opportunity_data
+            
         except Exception as e:
             logger.error(f"❌ Error converting PNCP data to OpportunityData: {e}")
             # 🔧 FALLBACK: Retornar dados mínimos para evitar crash
-            return OpportunityData(
+            fallback_opportunity = OpportunityData(
                 external_id=licitacao.get('numeroControlePNCP', 'unknown'),
                 title='Erro na conversão de dados',
                 description=f'Erro ao processar licitação: {str(e)}',
@@ -1181,6 +1201,12 @@ class PNCPAdapter(ProcurementDataSource):
                     'raw_data': licitacao
                 }
             )
+            
+            # 🔧 CORREÇÃO CRÍTICA: Adicionar provider_name no fallback também
+            fallback_opportunity.provider_name = self.get_provider_name()
+            fallback_opportunity.contracting_authority = orgao_nome if 'orgao_nome' in locals() else None
+            
+            return fallback_opportunity
     
     def _extract_orgao_cnpj(self, licitacao: Dict[str, Any]) -> Optional[str]:
         """
@@ -1441,7 +1467,7 @@ class PNCPAdapter(ProcurementDataSource):
     
     def get_provider_name(self) -> str:
         """Get the provider name"""
-        return "PNCP"
+        return "pncp"
     
     def get_opportunity_details(self, external_id: str) -> Optional[OpportunityData]:
         """Get detailed information for a specific opportunity

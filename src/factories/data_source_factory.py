@@ -1,180 +1,120 @@
-from typing import Dict, Type, Any, List
+"""
+🏭 Factory para Data Sources
+Implementa Factory Pattern + Singleton para gerenciar providers de dados
+"""
+
 import logging
+from typing import Dict, Optional
 
 from interfaces.procurement_data_source import ProcurementDataSource
-from adapters.pncp_adapter import PNCPAdapter
-from config.data_source_config import DataSourceConfig
 
 logger = logging.getLogger(__name__)
 
-
 class DataSourceFactory:
-    """Factory for creating procurement data source instances
-    
-    This factory implements the Factory pattern to manage different
-    procurement data sources in a centralized way.
+    """
+    Factory para criação de Data Sources
+    Implementa Singleton Pattern para evitar múltiplas instâncias
     """
     
-    # Registry of available provider classes
-    _providers: Dict[str, Type[ProcurementDataSource]] = {
-        'pncp': PNCPAdapter,
-        # Future providers will be added here:
-        # 'eu_ted': EUTEDAdapter,
-        # 'comprasnet': ComprasNetAdapter,
-    }
+    _instance: Optional['DataSourceFactory'] = None
+    _data_sources: Dict[str, ProcurementDataSource] = {}
     
-    def __init__(self, config: DataSourceConfig = None):
-        self.config = config or DataSourceConfig()
-        # Cache for provider instances to avoid creating duplicates
-        self._instance_cache = {}
-        logger.info(f"✅ DataSourceFactory initialized with {len(self._providers)} registered providers")
+    def __new__(cls) -> 'DataSourceFactory':
+        """Implementação do Singleton Pattern"""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            logger.info("🏭 DataSourceFactory singleton criada")
+        return cls._instance
     
-    @classmethod
-    def register_provider(cls, name: str, provider_class: Type[ProcurementDataSource]):
-        """Register a new provider class
-        
-        This allows adding new providers without modifying the factory code.
+    def get_data_source(self, provider_name: str) -> Optional[ProcurementDataSource]:
         """
-        if not issubclass(provider_class, ProcurementDataSource):
-            raise ValueError(f"Provider {name} must implement ProcurementDataSource interface")
-        
-        cls._providers[name] = provider_class
-        logger.info(f"✅ Provider '{name}' registered in factory")
-    
-    def create(self, provider_name: str, config_override: Dict[str, Any] = None) -> ProcurementDataSource:
-        """Create a data source instance with caching
+        Obtém instância de um data source específico
         
         Args:
-            provider_name: Name of the provider ('pncp', 'eu_ted', etc.)
-            config_override: Optional configuration overrides
+            provider_name: Nome do provider (ex: 'pncp', 'comprasnet')
             
         Returns:
-            Configured provider instance (cached if possible)
+            Instância do data source ou None se não suportado
+        """
+        if provider_name in self._data_sources:
+            return self._data_sources[provider_name]
+        
+        try:
+            if provider_name.lower() == 'pncp':
+                from adapters.pncp_adapter import PNCPAdapter
+                
+                # 🔧 CORREÇÃO: Fornecer configuração padrão para PNCPAdapter
+                default_config = {
+                    'api_base_url': 'https://pncp.gov.br/api/consulta/v1',
+                    'timeout': 30,
+                    'max_results': 1000,  # Limitar para busca unificada
+                    'cache_ttl': 3600
+                }
+                
+                instance = PNCPAdapter(default_config)
+                self._data_sources[provider_name] = instance
+                logger.info(f"✅ {provider_name} adapter criado e cacheado")
+                return instance
+                
+            elif provider_name.lower() == 'comprasnet':
+                from adapters.comprasnet_adapter import ComprasNetAdapter
+                instance = ComprasNetAdapter()
+                self._data_sources[provider_name] = instance
+                logger.info(f"✅ {provider_name} adapter criado e cacheado")
+                return instance
             
-        Raises:
-            ValueError: If provider is unknown or disabled
-        """
-        if provider_name not in self._providers:
-            available = list(self._providers.keys())
-            raise ValueError(f"Unknown provider: {provider_name}. Available: {available}")
-        
-        if not self.config.is_provider_enabled(provider_name):
-            raise ValueError(f"Provider {provider_name} is not enabled in configuration")
-        
-        # Create cache key based on provider name and config
-        cache_key = f"{provider_name}_{hash(str(config_override or {}))}"
-        
-        # Return cached instance if available
-        if cache_key in self._instance_cache:
-            logger.info(f"✅ Returning CACHED {provider_name} provider instance")
-            return self._instance_cache[cache_key]
-        
-        # Get provider configuration
-        provider_config = self.config.get_provider_config(provider_name).copy()
-        
-        # Apply any configuration overrides
-        if config_override:
-            provider_config.update(config_override)
-        
-        # Create new provider instance
-        provider_class = self._providers[provider_name]
-        instance = provider_class(provider_config)
-        
-        # Cache the instance
-        self._instance_cache[cache_key] = instance
-        
-        logger.info(f"✅ Created NEW {provider_name} provider instance (cached for reuse)")
-        return instance
+            else:
+                logger.warning(f"⚠️ Provider não suportado: {provider_name}")
+                return None
+                
+        except ImportError as e:
+            logger.error(f"❌ Erro ao importar {provider_name}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Erro ao criar {provider_name}: {e}")
+            return None
     
-    def create_all_active(self) -> Dict[str, ProcurementDataSource]:
-        """Create instances for all active providers
+    def list_available_providers(self) -> list:
+        """
+        Lista todos os providers disponíveis
         
         Returns:
-            Dictionary mapping provider names to instances
+            Lista de nomes dos providers disponíveis
         """
-        active_providers = self.config.get_active_providers()
-        instances = {}
+        return ['pncp', 'comprasnet']
+    
+    def is_provider_supported(self, provider_name: str) -> bool:
+        """
+        Verifica se um provider é suportado
         
-        for provider_name in active_providers:
-            try:
-                instance = self.create(provider_name)
-                instances[provider_name] = instance
-            except Exception as e:
-                logger.error(f"Failed to create provider {provider_name}: {e}")
-                # Continue with other providers - graceful degradation
-                continue
-        
-        logger.info(f"✅ Created {len(instances)} active provider instances")
-        return instances
+        Args:
+            provider_name: Nome do provider
+            
+        Returns:
+            True se suportado
+        """
+        return provider_name.lower() in ['pncp', 'comprasnet']
     
-    def get_available_providers(self) -> List[str]:
-        """Get list of all registered providers"""
-        return list(self._providers.keys())
-    
-    def get_active_providers(self) -> List[str]:
-        """Get list of currently enabled providers"""
-        return self.config.get_active_providers()
-    
-    def validate_all_providers(self) -> Dict[str, bool]:
-        """Validate connection for all active providers
+    def get_cached_providers(self) -> list:
+        """
+        Lista providers que já foram instanciados e estão em cache
         
         Returns:
-            Dictionary mapping provider names to connection status
+            Lista de nomes dos providers em cache
         """
-        active_providers = self.get_active_providers()
-        validation_results = {}
-        
-        for provider_name in active_providers:
-            try:
-                provider = self.create(provider_name)
-                is_connected = provider.validate_connection()
-                validation_results[provider_name] = is_connected
-                
-                status = "✅ Connected" if is_connected else "❌ Disconnected"
-                logger.info(f"{provider_name}: {status}")
-                
-            except Exception as e:
-                validation_results[provider_name] = False
-                logger.error(f"{provider_name}: ❌ Failed to validate - {e}")
-        
-        return validation_results
+        return list(self._data_sources.keys())
     
-    def get_provider_info(self) -> Dict[str, Dict[str, Any]]:
-        """Get information about all providers
-        
-        Returns:
-            Dictionary with provider metadata and status
-        """
-        provider_info = {}
-        
-        for provider_name in self.get_available_providers():
-            try:
-                is_enabled = self.config.is_provider_enabled(provider_name)
-                config = self.config.get_provider_config(provider_name)
-                
-                info = {
-                    'enabled': is_enabled,
-                    'config': config,
-                    'connected': False,
-                    'metadata': {}
-                }
-                
-                # Get additional metadata if provider is enabled
-                if is_enabled:
-                    try:
-                        provider = self.create(provider_name)
-                        info['connected'] = provider.validate_connection()
-                        info['metadata'] = provider.get_provider_metadata()
-                    except Exception as e:
-                        logger.warning(f"Could not get metadata for {provider_name}: {e}")
-                
-                provider_info[provider_name] = info
-                
-            except Exception as e:
-                logger.error(f"Error getting info for {provider_name}: {e}")
-                provider_info[provider_name] = {
-                    'enabled': False,
-                    'error': str(e)
-                }
-        
-        return provider_info
+    def clear_cache(self) -> None:
+        """Limpa o cache de data sources"""
+        self._data_sources.clear()
+        logger.info("🧹 Cache de data sources limpo")
+
+
+def get_data_source_factory() -> DataSourceFactory:
+    """
+    Função auxiliar para obter instância singleton da factory
+    
+    Returns:
+        Instância singleton da DataSourceFactory
+    """
+    return DataSourceFactory()
