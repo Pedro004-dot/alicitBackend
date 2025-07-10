@@ -343,12 +343,11 @@ class PNCPAdapter(ProcurementDataSource):
         seen_pncp_ids = set()
         total_pages_searched = 0
         max_pages = 200  # Same as working repository
-        batch_size = 20  # Process 20 pages in parallel (same as working repo)ene
+        batch_size = 20  # Process 20 pages in parallel (same as working repo)
         
         # 🔄 PARALLEL BATCH PROCESSING (like working repository)
         logger.info(f"🚀 Executing {max_pages} API calls in parallel batches...")
-        # 🔄 PARALLEL BATCH PROCESSING (like working repository)
-       
+        
         start_time = time.time()
         empty_batches_count = 0
         max_empty_batches = 5
@@ -1667,62 +1666,48 @@ class PNCPAdapter(ProcurementDataSource):
     
     def get_opportunity_items(self, external_id: str) -> List[Dict[str, Any]]:
         """Get items/products for a specific opportunity
-        
         Args:
             external_id: The PNCP numeroControlePNCP identifier
-            
         Returns:
             List of items/products for this opportunity
         """
         try:
-            logger.info(f"🔍 Buscando itens da licitação PNCP: {external_id}")
-            
-            # 🔧 EXTRAIR COMPONENTES DO numeroControlePNCP
+            logger.info(f"🔍 [PNCP] Buscando itens da licitação: {external_id}")
             cnpj, ano, sequencial = self._parse_numero_controle_pncp(external_id)
-            
+            logger.info(f"[PNCP] Componentes extraídos: CNPJ={cnpj}, ANO={ano}, SEQUENCIAL={sequencial}")
             if not all([cnpj, ano, sequencial]):
-                logger.error(f"❌ Não foi possível extrair CNPJ/ANO/SEQUENCIAL de: {external_id}")
+                logger.error(f"❌ [PNCP] Não foi possível extrair CNPJ/ANO/SEQUENCIAL de: {external_id}")
                 return []
-            
-            # 🌐 MONTAR URL DA API v1 PARA ITENS
-            api_v1_base = "https://pncp.gov.br/api/consulta/v1"  # 🔧 URL CORRIGIDA
+            # CORRIGIDO: endpoint correto para itens
+            api_v1_base = "https://pncp.gov.br/api/pncp/v1"
             url_itens = f"{api_v1_base}/orgaos/{cnpj}/compras/{ano}/{sequencial}/itens"
-            
-            logger.info(f"🌐 Buscando itens via API v1 CORRIGIDA: {url_itens}")
-            
-            # 🔍 BUSCAR ITENS DA LICITAÇÃO
+            logger.info(f"🌐 [PNCP] Buscando itens via API v1 CORRIGIDA: {url_itens}")
             import requests
             response = requests.get(url_itens, timeout=self.timeout)
+            logger.info(f"[PNCP] Status code da resposta: {response.status_code}")
             response.raise_for_status()
-            
             itens = response.json()
-            logger.info(f"✅ {len(itens)} itens encontrados para {external_id}")
-            
+            logger.info(f"✅ [PNCP] {len(itens)} itens encontrados para {external_id}")
             return itens
-            
         except requests.RequestException as e:
-            logger.error(f"❌ Erro na API PNCP v1 ao buscar itens de {external_id}: {e}")
-            
-            # 🔄 FALLBACK: Tentar extrair itens dos dados principais
+            logger.error(f"❌ [PNCP] Erro na API PNCP v1 ao buscar itens de {external_id}: {e}")
             try:
-                logger.info("🔄 Tentando extrair itens dos dados principais...")
+                logger.info("🔄 [PNCP] Tentando extrair itens dos dados principais...")
                 detalhes = self.get_opportunity_details(external_id)
                 if detalhes and detalhes.provider_specific_data:
                     raw_data = detalhes.provider_specific_data.get('raw_data', {})
-                    itens_embedded = raw_data.get('itens', [])
-                    if itens_embedded:
-                        logger.info(f"✅ FALLBACK: {len(itens_embedded)} itens extraídos dos dados principais")
-                        return itens_embedded
-                
-                logger.warning(f"⚠️ Nenhum item encontrado para {external_id}")
+                    itens_embutidos = raw_data.get('itens', [])
+                    logger.info(f"[PNCP] Itens embutidos encontrados: {len(itens_embutidos)}")
+                    if itens_embutidos:
+                        logger.info(f"✅ [PNCP] FALLBACK: {len(itens_embutidos)} itens extraídos dos dados principais")
+                        return itens_embutidos
+                logger.warning(f"⚠️ [PNCP] Nenhum item encontrado para {external_id}")
                 return []
-                
             except Exception as fallback_error:
-                logger.error(f"❌ FALLBACK também falhou: {fallback_error}")
+                logger.error(f"❌ [PNCP] FALLBACK também falhou: {fallback_error}")
                 return []
-            
         except Exception as e:
-            logger.error(f"❌ Erro inesperado ao buscar itens de {external_id}: {e}")
+            logger.error(f"❌ [PNCP] Erro inesperado ao buscar itens de {external_id}: {e}")
             return []
 
     async def validate_connection(self) -> bool:

@@ -349,116 +349,192 @@ class ComprasNetAdapter(ProcurementDataSource):
 
     def _extract_daily_bids(self) -> List[Dict[str, Any]]:
         """
-        📊 EXTRAÇÃO COMPLETA: TODAS as 328+ licitações com paginação automática
-        Implementa estratégia robusta para capturar volume completo
+        📊 EXTRAÇÃO COMPLETA: TODAS as licitações com paginação automática
+        Refatorado para parsing HTML ao invés de regex sobre texto bruto
         """
         try:
-            logger.info("🌐 Extraindo TODAS as licitações do ComprasNet com paginação...")
-            
+            logger.info("🌐 Extraindo TODAS as licitações do ComprasNet com parsing HTML...")
             raw_data_list = []
             page = 1
-            max_pages = 50  # Limite de segurança
+            max_pages = 30  # Limite de segurança
             consecutive_empty = 0
             max_consecutive_empty = 3
-            
+
             while page <= max_pages and consecutive_empty < max_consecutive_empty:
                 logger.info(f"📄 Processando página {page}...")
-                
                 try:
-                    # URL base do ComprasNet (mesma para todas as páginas)
+                    # Ajuste: passar parâmetro de página na URL
+                    params = {'pagina': page} if page > 1 else {}
                     response = self.session.get(
                         self.daily_bids_url,
+                        params=params,
                         timeout=self.timeout,
                         verify=False
                     )
-                    
                     if response.status_code != 200:
                         logger.warning(f"❌ Página {page} retornou status {response.status_code}")
                         consecutive_empty += 1
                         page += 1
                         continue
 
-                    # ComprasNet usa encoding Windows-1252
                     response.encoding = 'windows-1252'
                     soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # Extrair informação de total na primeira página
-                    if page == 1:
-                        text_content = soup.get_text()
-                        total_match = re.search(r'Licitações \((\d+) - (\d+) de (\d+)\)', text_content)
-                        if total_match:
-                            start_num = int(total_match.group(1))
-                            end_num = int(total_match.group(2))
-                            total_licitacoes = int(total_match.group(3))
-                            per_page = end_num - start_num + 1
-                            estimated_pages = (total_licitacoes // per_page) + 1
-                            logger.info(f"📊 Total: {total_licitacoes} licitações, {per_page} por página, ~{estimated_pages} páginas")
-                            max_pages = min(max_pages, estimated_pages + 2)
-                    
-                    # Buscar licitações na estrutura real do ComprasNet
-                    licitacao_blocks = self._find_advanced_licitacao_blocks(soup)
-                    
-                    if not licitacao_blocks:
-                        logger.warning(f"⚠️ Página {page} sem blocos válidos")
-                        consecutive_empty += 1
-                        page += 1
-                        continue
-                    
-                    logger.info(f"   ✅ Página {page}: {len(licitacao_blocks)} blocos extraídos")
+
+                    # NOVO: Buscar todas as tabelas de licitação
+                    licitacao_tables = soup.find_all('table', class_='td')
+                    logger.info(f"🔍 Encontradas {len(licitacao_tables)} tabelas de licitação na página {page}")
+
                     page_results = 0
-                    
-                    # Processar cada bloco da página
-                    for i, block in enumerate(licitacao_blocks):
+                    for i, table in enumerate(licitacao_tables):
                         try:
-                            raw_data = self._parse_advanced_block(block, len(raw_data_list) + i + 1)
+                            raw_data = self._parse_licitacao_table_html(table, len(raw_data_list) + i + 1, page)
                             if raw_data:
-                                # Verificar se já existe (evitar duplicatas entre páginas)
                                 external_id = raw_data.get('external_id', '')
                                 if not any(item.get('external_id') == external_id for item in raw_data_list):
                                     raw_data_list.append(raw_data)
                                     page_results += 1
                         except Exception as e:
-                            logger.warning(f"⚠️ Erro no bloco {i+1} da página {page}: {e}")
+                            logger.warning(f"⚠️ Erro no parsing da tabela {i+1} da página {page}: {e}")
                             continue
-                    
+
                     logger.info(f"   📊 Página {page}: +{page_results} licitações únicas (Total: {len(raw_data_list)})")
-                    
-                    # Reset contador se encontrou resultados
+
                     if page_results > 0:
                         consecutive_empty = 0
                     else:
                         consecutive_empty += 1
-                    
-                    # NOTA: ComprasNet pode não ter paginação real na URL
-                    # Nesse caso, a primeira página já contém tudo
-                    if page == 1 and len(licitacao_blocks) >= 20:
-                        logger.info("ℹ️ ComprasNet pode mostrar todas as licitações em uma página única")
-                        # Continue para verificar se há mais páginas
-                    
+
                     page += 1
-                    
-                    # Pausa educativa entre páginas
                     if page <= max_pages:
                         time.sleep(0.5)
-                        
                 except Exception as e:
                     logger.error(f"❌ Erro na página {page}: {e}")
                     consecutive_empty += 1
                     page += 1
                     continue
-            
+
             logger.info(f"🎉 EXTRAÇÃO COMPLETA: {len(raw_data_list)} licitações de {page-1} páginas processadas")
-            
-            # Log estatísticas finais
             if raw_data_list:
                 uasgs = set(item.get('uasg', '') for item in raw_data_list if item.get('uasg'))
                 logger.info(f"📊 Estatísticas: {len(uasgs)} UASGs diferentes encontradas")
-                
             return raw_data_list
-            
         except Exception as e:
             logger.error(f"❌ Erro na extração paginada: {e}")
             return []
+
+    def _parse_licitacao_table_html(self, table, block_number, page_number) -> dict:
+        """
+        NOVO: Extrai dados relevantes de uma tabela de licitação usando parsing HTML
+        """
+        try:
+            soup = BeautifulSoup(str(table), 'html.parser')
+            b_tags = soup.find_all('b')
+            data = {}
+            # 1. Órgão Licitante
+            orgao_block = b_tags[0].decode_contents().replace('<br>', '\n').replace('\n', '\n').strip() if b_tags else ''
+            # Extrair razão social (primeira linha do bloco de órgão)
+            if orgao_block:
+                orgao_block_clean = re.sub(r'<br\s*/?>', '\n', orgao_block)
+                orgao_block_clean = re.sub(r'<.*?>', '', orgao_block_clean)
+                linhas = [l.strip() for l in orgao_block_clean.split('\n') if l.strip()]
+                razao_social = linhas[0] if linhas else ''
+                orgao_hierarquia = ' - '.join(linhas[:2]) if len(linhas) >= 2 else razao_social
+            else:
+                razao_social = ''
+                orgao_hierarquia = ''
+            data['procuring_entity_name'] = razao_social
+            data['orgao_hierarquia'] = orgao_hierarquia  # opcional, pode ser usado no frontend
+            # 2. UASG
+            uasg_match = re.search(r'Código da UASG:\s*(\d+)', orgao_block)
+            data['uasg'] = uasg_match.group(1) if uasg_match else ''
+            # 3. Pregão Eletrônico Nº
+            pregao_tag = next((b for b in b_tags if 'Pregão Eletrônico' in b.text), None)
+            pregao_match = re.search(r'Pregão Eletrônico Nº\s*(\d+)/(\d+)', pregao_tag.text) if pregao_tag else None
+            if pregao_match and data['uasg']:
+                pregao_num = pregao_match.group(1)
+                pregao_ano = pregao_match.group(2)
+                data['external_id'] = f"comprasnet_{data['uasg']}_{pregao_num}_{pregao_ano}"
+            else:
+                data['external_id'] = f"comprasnet_bloco_{block_number}_{int(time.time())}"
+            # 4. Objeto
+            objeto_tag = next((b for b in b_tags if 'Objeto:' in b.text), None)
+            if objeto_tag:
+                objeto = objeto_tag.next_sibling
+                if objeto:
+                    data['object_description'] = str(objeto).replace('Objeto: ', '').strip()
+                else:
+                    data['object_description'] = ''
+            else:
+                data['object_description'] = ''
+            # 5. Data de Publicação
+            edital_tag = next((b for b in b_tags if 'Edital a partir de:' in b.text), None)
+            if edital_tag:
+                edital_text = edital_tag.next_sibling
+                if edital_text:
+                    match = re.search(r'(\d{2}/\d{2}/\d{4})', edital_text)
+                    data['publication_date'] = self._parse_brazilian_date(match.group(1)) if match else None
+                    data['opening_date'] = data['publication_date']
+                else:
+                    data['publication_date'] = data['opening_date'] = None
+            else:
+                data['publication_date'] = data['opening_date'] = None
+            # 6. Data de Encerramento: sempre 20 dias após publicação
+            if data.get('publication_date'):
+                from datetime import timedelta
+                data['submission_deadline'] = data['publication_date'] + timedelta(days=20)
+            else:
+                data['submission_deadline'] = None
+            # 7. Endereço, cidade, UF
+            endereco_tag = next((b for b in b_tags if 'Endereço:' in b.text), None)
+            if endereco_tag:
+                endereco_text = endereco_tag.next_sibling
+                if endereco_text:
+                    endereco_str = endereco_text.strip()
+                    # Extrair cidade e UF dos dois últimos campos
+                    match = re.search(r'-\s*([A-Za-zÀ-ÿ\s]+)\s*\((\w{2})\)\s*$', endereco_str)
+                    if match:
+                        data['cidade'] = match.group(1).strip()
+                        data['uf_sigla'] = match.group(2)
+                    else:
+                        data['cidade'] = data['uf_sigla'] = None
+                    data['endereco'] = endereco_str
+                else:
+                    data['cidade'] = data['uf_sigla'] = None
+                    data['endereco'] = ''
+            else:
+                data['cidade'] = data['uf_sigla'] = None
+                data['endereco'] = ''
+            # 8. Razão social: terceira linha do bloco de órgão
+            partes = re.split(r'<br\s*/?>|\n', orgao_block)
+            data['razao_social'] = partes[2].strip() if len(partes) > 2 else ''
+            # Outros campos para compatibilidade
+            data['modality'] = 'PREGAO_ELETRONICO'
+            data['modprp'] = '5'
+            data['dates'] = {
+                'publication_date': data.get('publication_date'),
+                'submission_deadline': data.get('submission_deadline'),
+                'opening_date': data.get('opening_date')
+            }
+            data['telefone'] = ''
+            data['block_number'] = block_number
+            data['extraction_timestamp'] = datetime.now().isoformat()
+            data['source_url'] = self.daily_bids_url
+            data['raw_text'] = soup.get_text()
+            data['bid_params'] = {
+                'coduasg': data['uasg'],
+                'modprp': '5',
+                'numprp': f"{pregao_match.group(1)}{pregao_match.group(2)}" if pregao_match else ''
+            } if data['uasg'] and pregao_match else None
+            data['debug_info'] = {
+                'pregao_numero': pregao_match.group(1) if pregao_match else None,
+                'pregao_ano': pregao_match.group(2) if pregao_match else None,
+                'uasg_found': bool(data['uasg']),
+                'dates_found': sum(1 for d in data['dates'].values() if d)
+            }
+            return data
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao parsear tabela de licitação: {e}")
+            return None
 
     def _find_advanced_licitacao_blocks(self, soup: BeautifulSoup) -> List[str]:
         """
@@ -662,7 +738,7 @@ class ComprasNetAdapter(ProcurementDataSource):
                 'source_url': self.daily_bids_url,
                 'block_number': block_number,
                 # 🔗 PARÂMETROS CORRIGIDOS PARA BUSCA DE ITENS
-                'bid_params': bid_params,  # ✅ Parâmetros válidos para busca
+                'bid_params': bid_params,  # ✅ Parâmetros válidos para busca de itens
                 # 🔍 METADADOS PARA DEBUG
                 'debug_info': {
                     'pregao_numero': pregao_match.group(1) if pregao_match else None,
@@ -1120,15 +1196,14 @@ class ComprasNetAdapter(ProcurementDataSource):
                 match = re.search(pattern, text, re.IGNORECASE)
                 if match:
                     dates['publication_date'] = self._parse_brazilian_date(match.group(1))
-                    dates['opening_date'] = dates['publication_date']  # Mesma data para abertura
                     break
             
-            # 📅 DATA DE ENTREGA/ENCERRAMENTO
+            # 📅 DATA DE ENTREGA/ENCERRAMENTO (submission_deadline)
             entrega_patterns = [
-                r'Entrega da Proposta\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{4})\s*às\s*(\d{1,2}:\d{2})',
-                r'Entrega da Proposta\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{4})',
-                r'Abertura das Propostas\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{4})',
-                r'Encerramento\s*:?\s*(\d{1,2}\/\d{1,2}\/\d{4})'
+                # Variantes com singular/plural e com/sem horário
+                r'Entrega da[s]? Proposta[s]?\s*:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s*às?\s*(\d{1,2}:\d{2})',
+                r'Entrega da[s]? Proposta[s]?\s*:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',
+                r'Encerramento da[s]? Proposta[s]?\s*:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})'
             ]
             
             for pattern in entrega_patterns:
@@ -1141,6 +1216,22 @@ class ComprasNetAdapter(ProcurementDataSource):
                         if horario:
                             logger.debug(f"📅 Horário de entrega encontrado: {horario}")
                     break
+
+            # 📅 DATA DE ABERTURA DAS PROPOSTAS (opening_date) - pode diferir do edital
+            abertura_patterns = [
+                r'Abertura da[s]? Proposta[s]?\s*:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',
+                r'Abertura das Propostas\s*:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})'
+            ]
+
+            for pattern in abertura_patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    dates['opening_date'] = self._parse_brazilian_date(match.group(1))
+                    break
+
+            # Se opening_date ainda não definida, usar publication_date como fallback
+            if not dates['opening_date']:
+                dates['opening_date'] = dates.get('publication_date')
             
             # 📅 FALLBACK: Se não encontrou datas específicas, usar padrão conservador
             if not any(dates.values()):
@@ -1296,7 +1387,7 @@ class ComprasNetAdapter(ProcurementDataSource):
             
             # Processar keywords que podem vir com OR ou aspas
             if ' OR ' in keywords:
-                import re
+               
                 keyword_terms = re.findall(r'"([^"]*)"', keywords)
                 if not keyword_terms:
                     keyword_terms = [term.strip().strip('"') for term in keywords.split(' OR ') if term.strip()]
@@ -1642,43 +1733,37 @@ class ComprasNetAdapter(ProcurementDataSource):
         """
         try:
             logger.info(f"🔍 Extraindo parâmetros para busca de itens: {external_id}")
-            
             # 1. Se temos dados no cache, usar eles primeiro
             if external_id in self._raw_data_cache:
                 raw_data = self._raw_data_cache[external_id]
                 bid_params = raw_data.get('bid_params')
-                
                 if bid_params and all(bid_params.get(key) for key in ['coduasg', 'modprp', 'numprp']):
                     logger.info(f"✅ Parâmetros do cache: UASG={bid_params['coduasg']}, Pregão={bid_params['numprp']}")
                     return bid_params
                 else:
                     logger.warning(f"⚠️ Parâmetros do cache incompletos: {bid_params}")
-            
             # 2. Tentar extrair do padrão do external_id
             # Formato: comprasnet_{uasg}_{numero}_{ano}
             if external_id.startswith('comprasnet_'):
                 parts = external_id.split('_')
-                if len(parts) >= 4:  # comprasnet_uasg_numero_ano
+                if len(parts) >= 4:
                     uasg = parts[1]
                     numero = parts[2]
                     ano = parts[3]
-                    
-                    # Construir numprp conforme padrão observado
                     numprp = f"{numero}{ano}"
-                    
                     params = {
                         'coduasg': uasg,
-                        'modprp': '5',  # Pregão Eletrônico
+                        'modprp': '5',
                         'numprp': numprp
                     }
-                    
-                    logger.info(f"✅ Parâmetros extraídos do ID: UASG={uasg}, Pregão={numprp}")
+                    logger.info(f"✅ Parâmetros extraídos do ID: UASG={uasg}, Pregão={numprp}, modprp=5")
                     return params
-            
+                else:
+                    logger.error(f"❌ external_id malformado: {external_id} (esperado: comprasnet_uasg_numero_ano)")
+                    return None
             # 3. Fallback: buscar na base de dados
             logger.warning(f"⚠️ Tentando buscar parâmetros na base para {external_id}")
             return self._fetch_params_from_database(external_id)
-            
         except Exception as e:
             logger.error(f"❌ Erro ao extrair parâmetros de {external_id}: {e}")
             return None
@@ -1691,23 +1776,19 @@ class ComprasNetAdapter(ProcurementDataSource):
         try:
             logger.info(f"🌐 Iniciando busca de itens ComprasNet...")
             logger.info(f"   📋 Parâmetros: {params}")
-            
             # 🌐 URLs POSSÍVEIS PARA ITENS NO COMPRASNET
             possible_urls = [
-                # URL recomendada pelo ComprasNet para download dos detalhes (itens do edital)
                 f"{self.base_url}/ConsultaLicitacoes/download/download_editais_detalhe.asp",
                 # URL tradicional de consulta de itens (pode falhar dependendo do pregão)
                 f"{self.base_url}/ConsultaLicitacoes/ConsItensLicitacao.asp",
                 # Página de detalhes do pregão (fallback genérico)
                 f"{self.base_url}/ConsultaLicitacoes/ConsLicitacao.asp"
             ]
-            
             items = []
-            
             for url_index, url in enumerate(possible_urls):
                 try:
                     logger.info(f"🌐 Tentando URL {url_index + 1}: {url}")
-                    
+                    logger.info(f"   🔗 URL completa: {url}?coduasg={params.get('coduasg')}&modprp={params.get('modprp')}&numprp={params.get('numprp')}")
                     response = self.session.get(
                         url,
                         params=params,
@@ -1715,38 +1796,25 @@ class ComprasNetAdapter(ProcurementDataSource):
                         verify=False,
                         allow_redirects=True
                     )
-                    
                     logger.info(f"   📊 Status: {response.status_code}, Tamanho: {len(response.content)} bytes")
-                    
                     if response.status_code == 200 and len(response.content) > 1000:
-                        # ComprasNet usa encoding Windows-1252
                         response.encoding = 'windows-1252'
-                        
                         soup = BeautifulSoup(response.text, 'html.parser')
-                        
-                        # Tentar extrair itens
                         items = self._parse_items_from_detail_page(soup, params)
-                        
                         if items:
                             logger.info(f"✅ Encontrados {len(items)} itens na URL {url_index + 1}")
                             return items
                         else:
                             logger.info(f"⚠️ URL {url_index + 1} acessível mas sem itens extraídos")
-                            
-                            # Log uma amostra do conteúdo para debug
                             sample_text = soup.get_text()[:500] if soup else "Sem conteúdo"
                             logger.debug(f"   📄 Amostra: {sample_text}")
                     else:
                         logger.warning(f"❌ URL {url_index + 1}: Status {response.status_code} ou conteúdo muito pequeno")
-                
                 except Exception as e:
                     logger.warning(f"❌ Erro na URL {url_index + 1}: {e}")
                     continue
-            
-            # Se não encontrou itens em nenhuma URL, tentar método de fallback
             logger.info(f"🔄 Tentando método de fallback para extrair itens...")
             return self._extract_items_fallback(params)
-            
         except Exception as e:
             logger.error(f"❌ Erro geral no scraping de itens: {e}")
             return []
@@ -1930,111 +1998,55 @@ class ComprasNetAdapter(ProcurementDataSource):
     def _parse_items_from_detail_page(self, soup: BeautifulSoup, params: Dict[str, str]) -> List[Dict[str, Any]]:
         """
         📋 PARSER ROBUSTO DE ITENS - Melhorado para HTML do ComprasNet
-        Extrai itens da página de detalhes usando múltiplas estratégias
+        Extrai itens da página de detalhes usando o padrão real informado pelo usuário
         """
         items = []
-        
         try:
-            page_text = soup.get_text()
-            logger.debug(f"📄 Tamanho da página: {len(page_text)} caracteres")
-            
-            # ESTRATÉGIA 1: Buscar tabelas de itens
-            tables = soup.find_all('table')
-            for table_index, table in enumerate(tables):
-                table_text = table.get_text().lower()
-                
-                # Verificar se é uma tabela de itens
-                if any(keyword in table_text for keyword in ['item', 'descrição', 'quantidade', 'unidade', 'valor']):
-                    logger.info(f"🔍 Tabela {table_index + 1} parece conter itens")
-                    
-                    rows = table.find_all('tr')
-                    for row_index, row in enumerate(rows[1:], 1):  # Pular cabeçalho
-                        cells = row.find_all(['td', 'th'])
-                        if len(cells) >= 3:  # Pelo menos item, descrição, quantidade
-                            
-                            item_data = {
-                                'item_number': str(row_index),
-                                'description': cells[1].get_text(strip=True) if len(cells) > 1 else f"Item {row_index}",
-                                'quantity': self._extract_number(cells[2].get_text()) if len(cells) > 2 else 1,
-                                'unit': cells[3].get_text(strip=True) if len(cells) > 3 else 'Unidade',
-                                'estimated_value': self._extract_number(cells[4].get_text()) if len(cells) > 4 else 0.0,
-                                'external_id': f"comprasnet_item_{params['coduasg']}_{params['numprp']}_{row_index}",
-                                'source': 'table_extraction'
-                            }
-                            
-                            if item_data['description'] and len(item_data['description']) > 3:
-                                items.append(item_data)
-                    
-                    if items:
-                        logger.info(f"✅ Extraídos {len(items)} itens da tabela {table_index + 1}")
-                        return items
-            
-            # ESTRATÉGIA 2: Buscar padrões de texto estruturado
-            item_patterns = [
-                r'Item\s+(\d+)\s*[-:]\s*(.{10,200})',
-                r'(\d+)\s*[-\.]\s*(.{10,200}?)(?=\d+\s*[-\.]|\Z)',
-                r'ITEM\s+(\d+)\s*(.{10,200})'
-            ]
-            
-            for pattern in item_patterns:
-                matches = re.findall(pattern, page_text, re.IGNORECASE | re.MULTILINE)
-                if matches:
-                    logger.info(f"🔍 Encontrados {len(matches)} itens com padrão de texto")
-                    
-                    for i, (num, desc) in enumerate(matches, 1):
-                        item = {
-                            'item_number': num.strip(),
-                            'description': desc.strip()[:200],  # Limitar tamanho
-                            'quantity': 1,
-                            'unit': 'Unidade',
-                            'estimated_value': 5000.0,  # Valor padrão
-                            'external_id': f"comprasnet_item_{params['coduasg']}_{params['numprp']}_{i}",
-                            'source': 'text_pattern_extraction'
-                        }
-                        items.append(item)
-                    
-                    if items:
-                        return items
-            
-            # ESTRATÉGIA 3: Se a página contém "Objeto:", criar itens baseados no objeto
-            objeto_match = re.search(r'Objeto\s*:?\s*(.{20,500})', page_text, re.IGNORECASE | re.DOTALL)
-            if objeto_match:
-                objeto_desc = objeto_match.group(1).strip()
-                logger.info(f"🎯 Criando itens baseados no objeto: {objeto_desc[:100]}...")
-                
-                # Determinar categorias baseadas no objeto
-                if any(word in objeto_desc.lower() for word in ['medicamento', 'farmácia', 'saúde']):
-                    categories = ['Medicamentos', 'Material hospitalar', 'Insumos médicos']
-                elif any(word in objeto_desc.lower() for word in ['material', 'laboratório', 'equipamento']):
-                    categories = ['Material de laboratório', 'Equipamentos', 'Instrumentos']
-                elif any(word in objeto_desc.lower() for word in ['alimento', 'merenda', 'gênero']):
-                    categories = ['Gêneros alimentícios', 'Produtos alimentares']
-                else:
-                    categories = ['Diversos', 'Materiais em geral']
-                
-                for i, category in enumerate(categories, 1):
-                    item = {
-                        'item_number': str(i),
-                        'description': f"{category} - {objeto_desc[:150]}",
-                        'quantity': 1,
-                        'unit': 'Lote',
-                        'category': category,
-                        'estimated_value': 25000.0,
-                        'external_id': f"comprasnet_item_{params['coduasg']}_{params['numprp']}_{i}",
-                        'source': 'object_based_extraction'
-                    }
-                    items.append(item)
-                
-                return items
-            
-            # ESTRATÉGIA 4: Item padrão quando nada funciona
-            logger.warning(f"⚠️ Nenhuma estratégia de extração funcionou, criando item padrão")
-            return self._generate_default_items(params)
-            
+            for tr in soup.find_all('tr'):
+                tds = tr.find_all('td')
+                if len(tds) < 2:
+                    continue
+                main_td = tds[1]
+                html_bruto = str(main_td)
+                logger.info(f"[ComprasNet] HTML bruto do item: {html_bruto}")
+                span_title = main_td.find('span', class_='tex3b')
+                span_desc = main_td.find('span', class_='tex3')
+                numero_item = None
+                nome = None
+                descricao = None
+                quantidade = None
+                unidade = None
+                if span_title:
+                    # Exemplo: '1 - PEÇAS / ACESSÓRIOS EQUIPAMENTOS ESPECIALIZADOS'
+                    partes = span_title.text.strip().split(' - ', 1)
+                    if len(partes) == 2:
+                        numero_item = partes[0].strip()
+                        nome = partes[1].strip()
+                    else:
+                        numero_item = span_title.text.strip()
+                if span_desc:
+                    descricao = span_desc.text.strip()
+                    # Buscar quantidade e unidade na descrição
+                    import re
+                    match_qtd = re.search(r'Quantidade:\s*([\d,.]+)', descricao)
+                    match_und = re.search(r'Unidade de fornecimento:\s*([\w\s/.\-]+)', descricao)
+                    if match_qtd:
+                        quantidade = match_qtd.group(1).strip()
+                    if match_und:
+                        unidade = match_und.group(1).strip()
+                logger.info(f"[ComprasNet] Item extraído: numero_item={numero_item}, nome={nome}, descricao={descricao}, quantidade={quantidade}, unidade={unidade}")
+                if numero_item and descricao:
+                    items.append({
+                        'numero_item': numero_item,
+                        'descricao': descricao,
+                        'quantidade': quantidade,
+                        'unidade_medida': unidade
+                    })
+            logger.info(f"[ComprasNet] Total de itens extraídos: {len(items)}")
         except Exception as e:
-            logger.error(f"❌ Erro no parsing de itens: {e}")
-            return []
-    
+            logger.error(f"[ComprasNet] Erro ao extrair itens: {e}")
+        return items
+
     def _extract_number(self, text: str) -> float:
         """
         🔢 EXTRAIR NÚMERO de texto formatado brasileiro
@@ -2068,118 +2080,6 @@ class ComprasNetAdapter(ProcurementDataSource):
                 
         except (ValueError, AttributeError):
             return 0.0
-
-    def _extract_items_fallback(self, params: Dict[str, str]) -> List[Dict[str, Any]]:
-        """
-        🔄 MÉTODO DE FALLBACK: Extrair itens usando estratégia alternativa
-        Quando as URLs principais não funcionam
-        """
-        try:
-            logger.info(f"🔄 Executando estratégia de fallback para itens...")
-            
-            # Estratégia 1: Buscar na página principal da licitação
-            main_url = f"{self.base_url}/ConsultaLicitacoes/ConsLicitacaoDia.asp"
-            
-            response = self.session.get(main_url, timeout=self.timeout, verify=False)
-            
-            if response.status_code == 200:
-                response.encoding = 'windows-1252'
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # Buscar por blocos que contenham o UASG específico
-                full_text = soup.get_text()
-                uasg = params.get('coduasg', '')
-                
-                if uasg:
-                    # Buscar bloco específico desta licitação
-                    uasg_pattern = f"Código da UASG\\s*:?\\s*{uasg}.*?(?=Código da UASG|$)"
-                    match = re.search(uasg_pattern, full_text, re.DOTALL | re.IGNORECASE)
-                    
-                    if match:
-                        block_text = match.group(0)
-                        logger.info(f"✅ Bloco da licitação encontrado: {len(block_text)} chars")
-                        
-                        # Gerar itens genéricos baseados no objeto
-                        items = self._generate_generic_items(block_text, params)
-                        if items:
-                            return items
-            
-            # Estratégia 2: Gerar itens padrão baseados no tipo de licitação
-            logger.info(f"🔄 Gerando itens padrão para licitação...")
-            return self._generate_default_items(params)
-            
-        except Exception as e:
-            logger.error(f"❌ Erro no fallback: {e}")
-            return []
-
-    def _generate_generic_items(self, block_text: str, params: Dict[str, str]) -> List[Dict[str, Any]]:
-        """
-        🎯 GERAR ITENS GENÉRICOS baseados no texto do bloco
-        """
-        items = []
-        
-        try:
-            # Extrair objeto para categorizar
-            objeto_match = re.search(r'Objeto\s*:.*?([^\.]+\.)', block_text, re.IGNORECASE | re.DOTALL)
-            objeto = objeto_match.group(1).strip() if objeto_match else "Item não especificado"
-            
-            # Categorizar por palavras-chave no objeto
-            categories = []
-            if any(word in objeto.lower() for word in ['medicamento', 'farmácia', 'remédio', 'fármaco']):
-                categories = ['Medicamentos', 'Produtos farmacêuticos', 'Insumos médicos']
-            elif any(word in objeto.lower() for word in ['material', 'laboratorial', 'equipamento']):
-                categories = ['Material de laboratório', 'Equipamentos médicos', 'Insumos laboratoriais'] 
-            elif any(word in objeto.lower() for word in ['alimentação', 'merenda', 'gênero']):
-                categories = ['Gêneros alimentícios', 'Produtos de merenda', 'Alimentos']
-            else:
-                categories = ['Diversos', 'Materiais gerais', 'Outros itens']
-            
-            # Gerar itens baseados nas categorias
-            for i, category in enumerate(categories, 1):
-                item = {
-                    'item_number': str(i),
-                    'description': f"{category} - {objeto[:100]}",
-                    'quantity': 1,
-                    'unit': 'Lote',
-                    'category': category,
-                    'external_id': f"comprasnet_item_{params['coduasg']}_{params['numprp']}_{i}",
-                    'estimated_value': 10000.0,  # Valor estimado genérico
-                    'source': 'generic_extraction'
-                }
-                items.append(item)
-            
-            logger.info(f"✅ Gerados {len(items)} itens genéricos baseados no objeto")
-            return items
-            
-        except Exception as e:
-            logger.error(f"❌ Erro ao gerar itens genéricos: {e}")
-            return []
-
-    def _generate_default_items(self, params: Dict[str, str]) -> List[Dict[str, Any]]:
-        """
-        📋 GERAR ITENS PADRÃO quando não é possível extrair detalhes
-        """
-        try:
-            logger.info(f"📋 Gerando itens padrão para UASG {params.get('coduasg')}...")
-            
-            # Item padrão genérico
-            item = {
-                'item_number': '1',
-                'description': f"Item de Pregão Eletrônico - UASG {params.get('coduasg')}",
-                'quantity': 1,
-                'unit': 'Lote',
-                'category': 'Diversos',
-                'external_id': f"comprasnet_item_{params['coduasg']}_{params['numprp']}_1",
-                'estimated_value': 50000.0,
-                'source': 'default_item',
-                'note': 'Item padrão gerado automaticamente - detalhes não disponíveis no momento'
-            }
-            
-            return [item]
-            
-        except Exception as e:
-            logger.error(f"❌ Erro ao gerar item padrão: {e}")
-            return []
 
     def _extract_item_details(self, description: str) -> Dict[str, Any]:
         """

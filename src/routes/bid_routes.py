@@ -76,6 +76,18 @@ def get_bid_items():
     """
     return controller.get_bid_items_by_query()
 
+@bid_routes.route('/items-multi', methods=['POST'])
+def buscar_itens_multi_provider():
+    """
+    POST /api/bids/items-multi
+    Recebe uma lista de licitações (ou external_ids) e retorna os itens de cada uma, multi-provider.
+    Corpo: { licitacoes: [ ... ] }
+    Retorna: { success: bool, data: [ {licitacao, itens} ], message: str }
+    """
+    from controllers.bid_controller import BidController
+    controller = BidController()
+    return controller.buscar_itens_multi_provider()
+
 @bid_routes.route('/documents', methods=['GET'])
 def get_bid_documents():
     """

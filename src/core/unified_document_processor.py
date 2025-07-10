@@ -224,7 +224,7 @@ class UnifiedDocumentProcessor:
                     
                     logger.info(f"📋 Content-Type: {content_type}, Size: {content_length} bytes")
                     
-                    # Se recebeu HTML ao invés de arquivo, logar erro detalhado
+                    # Se recebeu ao invés de arquivo, logar erro detalhado
                     if 'text/html' in content_type:
                         logger.error(f"❌ URL retornou HTML ao invés de arquivo: {doc_url}")
                         logger.error(f"🔍 Response preview: {doc_response.text[:200]}...")

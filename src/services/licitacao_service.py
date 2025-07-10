@@ -196,6 +196,45 @@ class LicitacaoService:
                 unicas.append(lic)
         return unicas
 
+    def _resolver_provider(self, external_id: str) -> str:
+        """
+        Resolve o provider a partir do external_id.
+        Pode ser expandido para novos providers facilmente.
+        """
+        if not external_id:
+            return 'pncp'  # fallback seguro
+        if external_id.startswith('pncp_') or external_id.isdigit():
+            return 'pncp'
+        elif external_id.startswith('comprasnet_'):
+            return 'comprasnet'
+        # Adicione outros providers conforme necessário
+        return 'pncp'  # fallback
+
+    def buscar_itens_para_licitacoes(self, licitacoes: List[Dict]) -> List[Dict]:
+        """
+        Para cada licitação, busca os itens usando o adaptador correto via factory.
+        Retorna uma lista de dicts: {'licitacao': ..., 'itens': [...]}
+        """
+        from factories.data_source_factory import get_data_source_factory
+        resultados = []
+        factory = get_data_source_factory()
+
+        for lic in licitacoes:
+            external_id = lic.get('external_id') or lic.get('pncp_id')
+            provider = self._resolver_provider(external_id)
+            adapter = factory.get_data_source(provider)
+            itens = []
+            if adapter:
+                try:
+                    itens = adapter.get_opportunity_items(external_id)
+                    logger.info(f"Itens buscados para {external_id} via provider {provider}: {len(itens)} encontrados.")
+                except Exception as e:
+                    logger.error(f"Erro ao buscar itens para {external_id} (provider {provider}): {e}")
+            else:
+                logger.warning(f"Provider '{provider}' não encontrado para external_id {external_id}")
+            resultados.append({'licitacao': lic, 'itens': itens})
+        return resultados
+
 # Exemplo de uso (para teste)
 if __name__ == '__main__':
     try:

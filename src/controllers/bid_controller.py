@@ -1076,3 +1076,24 @@ class BidController:
                 'items': [],
                 'provider': 'comprasnet'
             } 
+
+    def buscar_itens_multi_provider(self):
+        """
+        Endpoint para buscar itens de múltiplas licitações de diferentes providers.
+        Espera receber uma lista de licitações (ou external_ids) no corpo da requisição.
+        Retorna lista de dicts: {'licitacao': ..., 'itens': [...]}
+        """
+        from flask import request, jsonify
+        try:
+            data = request.get_json()
+            licitacoes = data.get('licitacoes') if data else None
+            if not licitacoes or not isinstance(licitacoes, list):
+                return jsonify({'success': False, 'message': 'Corpo da requisição deve conter uma lista de licitacoes'}), 400
+
+            from services.licitacao_service import LicitacaoService
+            service = LicitacaoService()
+            resultados = service.buscar_itens_para_licitacoes(licitacoes)
+            return jsonify({'success': True, 'data': resultados, 'message': f'{len(resultados)} licitações processadas'}), 200
+        except Exception as e:
+            logger.error(f"Erro ao buscar itens multi-provider: {e}")
+            return jsonify({'success': False, 'message': f'Erro ao buscar itens: {str(e)}'}), 500 
