@@ -88,6 +88,19 @@ class LicitacaoController:
                 "codigo": "ERRO_INTERNO"
             }), 500
     
+    def detalhes_licitacao(self, licitacao_id):
+        """
+        Busca detalhes completos da licitação e seus itens pelo ID interno.
+        """
+        try:
+            resultado = self.service.buscar_detalhes_por_id(licitacao_id)
+            if resultado:
+                return jsonify({"success": True, "data": resultado}), 200
+            else:
+                return jsonify({"success": False, "message": "Licitação não encontrada"}), 404
+        except Exception as e:
+            return jsonify({"success": False, "message": str(e)}), 500
+    
     def _validar_filtros(self, filtros: Dict) -> bool:
         """
         Valida os filtros básicos da requisição

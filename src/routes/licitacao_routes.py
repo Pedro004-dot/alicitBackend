@@ -65,4 +65,13 @@ def buscar():
       500:
         description: Erro interno do servidor
     """
-    return licitacao_controller.buscar() 
+    return licitacao_controller.buscar()
+
+@licitacao_routes.route('/api/licitacoes/<licitacao_id>/detalhes', methods=['GET'])
+def detalhes_licitacao(licitacao_id):
+    """
+    GET /api/licitacoes/<licitacao_id>/detalhes
+    Busca detalhes completos da licitação (e itens) pelo ID interno (UUID).
+    Busca apenas no banco de dados local.
+    """
+    return licitacao_controller.detalhes_licitacao(licitacao_id) 

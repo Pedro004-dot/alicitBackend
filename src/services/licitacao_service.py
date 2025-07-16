@@ -235,6 +235,23 @@ class LicitacaoService:
             resultados.append({'licitacao': lic, 'itens': itens})
         return resultados
 
+    def buscar_detalhes_por_id(self, licitacao_id):
+        """
+        Busca detalhes completos da licitação e seus itens pelo ID interno (UUID), apenas no banco local.
+        """
+        from repositories.licitacao_repository import LicitacaoRepository
+        from repositories.bid_repository import BidRepository
+        from config.database import db_manager
+        lic_repo = LicitacaoRepository(db_manager)
+        bid_repo = BidRepository(db_manager)
+        licitacao = lic_repo.find_by_id(licitacao_id)
+        if not licitacao:
+            return None
+        # Buscar itens relacionados
+        itens = bid_repo.find_items_by_bid_id(licitacao_id)
+        licitacao['itens'] = itens
+        return licitacao
+
 # Exemplo de uso (para teste)
 if __name__ == '__main__':
     try:

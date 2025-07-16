@@ -256,6 +256,7 @@ def process_daily_bids(vectorizer: BaseTextVectorizer, enable_llm_validation: bo
                     
                     # 🔥 FIX CRÍTICO: Salvar match aprovado pelo LLM imediatamente
                     save_match_to_db(pncp_id, company["id"], final_score, "llm_approved", final_justificativa)
+                    estatisticas.setdefault('matches_saved_immediately', 0)
                     estatisticas['matches_saved_immediately'] += 1
                     print(f"         💾 Match salvo no banco imediatamente!")
                 else:
